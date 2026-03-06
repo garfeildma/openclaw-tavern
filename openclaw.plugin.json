@@ -1,0 +1,11 @@
+{
+  "id": "openclaw-rp-plugin",
+  "name": "OpenClaw RP Plugin",
+  "description": "SillyTavern-compatible role-play command plugin for OpenClaw.",
+  "version": "0.1.0",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}

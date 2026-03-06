@@ -1,0 +1,40 @@
+{
+  "name": "openclaw-rp-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./providers/openaiCompatible": "./src/providers/openaiCompatible.js",
+    "./providers/attachmentResolvers": "./src/providers/attachmentResolvers.js",
+    "./channels/adapters": "./src/channels/adapters.js",
+    "./openclaw/register": "./src/openclaw/register.js"
+  },
+  "openclaw": {
+    "extensions": ["./src/openclaw/register.js"]
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "peerDependencies": {
+    "openclaw": "*",
+    "better-sqlite3": "^9.0.0",
+    "js-tiktoken": "^1.0.0"
+  },
+  "peerDependenciesMeta": {
+    "better-sqlite3": {
+      "optional": true
+    },
+    "openclaw": {
+      "optional": true
+    },
+    "js-tiktoken": {
+      "optional": true
+    }
+  },
+  "scripts": {
+    "test": "node --test",
+    "smoke": "node examples/smoke-run.js"
+  }
+}
