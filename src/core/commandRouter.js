@@ -9,7 +9,7 @@ import { sha256 } from "../utils/id.js";
 import { retryWithBackoff } from "./retry.js";
 import { InMemoryRateLimiter } from "./rateLimiter.js";
 import { DEFAULT_PRESET, DEFAULT_PRESET_NAME } from "./defaultPreset.js";
-import { cleanCardText, replacePlaceholders, stripHtml } from "../utils/textCleaner.js";
+import { cleanCardText, extractDialogueForTts, replacePlaceholders, stripHtml } from "../utils/textCleaner.js";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -923,11 +923,12 @@ export class CommandRouter {
       throw new RPError(RP_ERROR_CODES.MEDIA_FAILED, "TTS provider not configured");
     }
     this.rateLimiter.consume(`${ctx.userId}:${session.id}:speak`);
+    const ttsText = extractDialogueForTts(lastAssistant.content);
 
     const result = await retryWithBackoff(
       () =>
         this.ttsProvider.synthesize({
-          text: lastAssistant.content,
+          text: ttsText,
           session,
           userId: ctx.userId,
         }),

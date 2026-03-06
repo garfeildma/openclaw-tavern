@@ -324,6 +324,63 @@ function pickAssistantTextFromLlmOutput(event) {
   return "";
 }
 
+function cleanupRpContextMaps(activeByAgentSessionKey, activeByChannel, ttlMs) {
+  const now = Date.now();
+  for (const [key, ctx] of activeByAgentSessionKey) {
+    if (now - ctx.at > ttlMs) {
+      activeByAgentSessionKey.delete(key);
+    }
+  }
+  for (const [key, ctx] of activeByChannel) {
+    if (now - ctx.at > ttlMs) {
+      activeByChannel.delete(key);
+    }
+  }
+}
+
+function rememberRpContext(activeByAgentSessionKey, activeByChannel, ctx, channelKey, agentSessionKey) {
+  const payload = {
+    ...ctx,
+    channelKey,
+    agentSessionKey,
+  };
+  if (agentSessionKey) {
+    activeByAgentSessionKey.set(agentSessionKey, payload);
+  }
+  if (channelKey) {
+    activeByChannel.set(channelKey, payload);
+  }
+}
+
+function findRpContext(activeByAgentSessionKey, activeByChannel, ctx) {
+  const agentSessionKey = asString(ctx?.sessionKey);
+  if (agentSessionKey) {
+    const bySession = activeByAgentSessionKey.get(agentSessionKey);
+    if (bySession) {
+      return bySession;
+    }
+  }
+  const channelKey = asString(ctx?.channelId).toLowerCase();
+  if (channelKey) {
+    return activeByChannel.get(channelKey);
+  }
+  return null;
+}
+
+function deleteRpContext(activeByAgentSessionKey, activeByChannel, rpCtx) {
+  if (!rpCtx) {
+    return;
+  }
+  const agentSessionKey = asString(rpCtx?.agentSessionKey);
+  if (agentSessionKey) {
+    activeByAgentSessionKey.delete(agentSessionKey);
+  }
+  const channelKey = asString(rpCtx?.channelKey).toLowerCase();
+  if (channelKey) {
+    activeByChannel.delete(channelKey);
+  }
+}
+
 function extractSenderId(value) {
   const raw = asString(value);
   if (!raw) {
@@ -1421,7 +1478,9 @@ export default {
     const usedFallbackPaths = new Set();
     const pendingInboundByKey = new Map();
     const pendingInboundTtlMs = 120000;
-    // Maps channelId (from hook context) -> { session, routerCtx, at } for active RP prompt injection
+    // Track active RP prompt context by both agent sessionKey and channelId because
+    // OpenClaw agent hooks do not consistently provide channelId.
+    const activeRpContextByAgentSessionKey = new Map();
     const activeRpContextByChannel = new Map();
     const rpContextTtlMs = 120000;
 
@@ -1506,16 +1565,6 @@ export default {
       storeEventMediaToCache(event, mediaCache);
     });
 
-    // Clean up stale RP context entries
-    function cleanupRpContextMap() {
-      const now = Date.now();
-      for (const [key, ctx] of activeRpContextByChannel) {
-        if (now - ctx.at > rpContextTtlMs) {
-          activeRpContextByChannel.delete(key);
-        }
-      }
-    }
-
     api.on("message_received", async (event, hookCtx) => {
       try {
         await ensureInitialized();
@@ -1576,13 +1625,13 @@ export default {
 
         // Store RP context for before_prompt_build to pick up
         const channelKey = asString(hookCtx?.channelId || routerCtx.channelType).toLowerCase();
-        cleanupRpContextMap();
-        activeRpContextByChannel.set(channelKey, {
+        cleanupRpContextMaps(activeRpContextByAgentSessionKey, activeRpContextByChannel, rpContextTtlMs);
+        rememberRpContext(activeRpContextByAgentSessionKey, activeRpContextByChannel, {
           at: Date.now(),
           session,
           routerCtx,
           userContent: content,
-        });
+        }, channelKey);
 
         api.logger?.info?.(`[openclaw-rp] message_received: appended user turn to session ${session.id}, channelKey=${channelKey}`);
       } catch (err) {
@@ -1594,15 +1643,24 @@ export default {
     api.on("before_prompt_build", async (event, ctx) => {
       try {
         await ensureInitialized();
-        const channelKey = asString(ctx?.channelId).toLowerCase();
-        const rpCtx = activeRpContextByChannel.get(channelKey);
+        const rpCtx = findRpContext(activeRpContextByAgentSessionKey, activeRpContextByChannel, ctx);
         if (!rpCtx) {
           return;
         }
 
+        if (asString(ctx?.sessionKey) && rpCtx.agentSessionKey !== asString(ctx.sessionKey)) {
+          rememberRpContext(
+            activeRpContextByAgentSessionKey,
+            activeRpContextByChannel,
+            rpCtx,
+            rpCtx.channelKey,
+            asString(ctx.sessionKey),
+          );
+        }
+
         const session = store.getSessionById(rpCtx.session.id);
         if (!session || session.status !== "active") {
-          activeRpContextByChannel.delete(channelKey);
+          deleteRpContext(activeRpContextByAgentSessionKey, activeRpContextByChannel, rpCtx);
           return;
         }
 
@@ -1651,8 +1709,7 @@ export default {
     api.on("llm_output", async (event, ctx) => {
       try {
         await ensureInitialized();
-        const channelKey = asString(ctx?.channelId).toLowerCase();
-        const rpCtx = activeRpContextByChannel.get(channelKey);
+        const rpCtx = findRpContext(activeRpContextByAgentSessionKey, activeRpContextByChannel, ctx);
         if (!rpCtx) {
           return;
         }
@@ -1668,7 +1725,7 @@ export default {
         }
 
         // Consume the RP context only after capturing a valid assistant reply.
-        activeRpContextByChannel.delete(channelKey);
+        deleteRpContext(activeRpContextByAgentSessionKey, activeRpContextByChannel, rpCtx);
 
         const assistantTurn = store.appendTurn({
           sessionId: session.id,

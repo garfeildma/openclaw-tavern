@@ -52,3 +52,53 @@ export function cleanCardText(text, { charName, userName } = {}) {
     if (typeof text !== "string") return text;
     return replacePlaceholders(stripHtml(text), { charName, userName });
 }
+
+function normalizeDialogueWhitespace(text) {
+    return String(text || "")
+        .replace(/[ \t]+\n/g, "\n")
+        .replace(/\n[ \t]+/g, "\n")
+        .replace(/[ \t]{2,}/g, " ")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+}
+
+/**
+ * Extract spoken dialogue from an RP reply for TTS.
+ * Prefers quoted lines and falls back to lightly de-noised plain text.
+ */
+export function extractDialogueForTts(input) {
+    if (typeof input !== "string") return "";
+
+    const cleaned = normalizeDialogueWhitespace(stripHtml(input));
+    if (!cleaned) {
+        return "";
+    }
+
+    const quotedSegments = [];
+    const quotePatterns = [
+        /“([^”]+)”/g,
+        /"([^"\n]+)"/g,
+        /「([^」]+)」/g,
+        /『([^』]+)』/g,
+    ];
+    for (const pattern of quotePatterns) {
+        for (const match of cleaned.matchAll(pattern)) {
+            const segment = normalizeDialogueWhitespace(match[1]);
+            if (segment) {
+                quotedSegments.push(segment);
+            }
+        }
+    }
+    if (quotedSegments.length > 0) {
+        return quotedSegments.join("\n");
+    }
+
+    const fallback = normalizeDialogueWhitespace(
+        cleaned
+            .replace(/\*[^*\n]+\*/g, " ")
+            .replace(/_[^_\n]+_/g, " ")
+            .replace(/[（(][^()（）\n]{1,40}[）)]/g, " ")
+            .replace(/^[^\S\n]*[-*•]\s*/gm, "")
+    );
+    return fallback || cleaned;
+}
