@@ -307,6 +307,23 @@ function asString(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function pickAssistantTextFromLlmOutput(event) {
+  const lastAssistantContent = asString(event?.lastAssistant?.content);
+  if (lastAssistantContent) {
+    return lastAssistantContent;
+  }
+  if (!Array.isArray(event?.assistantTexts)) {
+    return "";
+  }
+  for (let i = event.assistantTexts.length - 1; i >= 0; i -= 1) {
+    const candidate = asString(event.assistantTexts[i]);
+    if (candidate) {
+      return candidate;
+    }
+  }
+  return "";
+}
+
 function extractSenderId(value) {
   const raw = asString(value);
   if (!raw) {
@@ -1640,23 +1657,18 @@ export default {
           return;
         }
 
-        // Consume the RP context so it doesn't apply to the next message
-        activeRpContextByChannel.delete(channelKey);
-
         const session = store.getSessionById(rpCtx.session.id);
         if (!session || session.status !== "active") {
           return;
         }
 
-        const assistantTexts = event?.assistantTexts;
-        if (!Array.isArray(assistantTexts) || assistantTexts.length === 0) {
-          return;
-        }
-
-        const lastText = assistantTexts[assistantTexts.length - 1];
+        const lastText = pickAssistantTextFromLlmOutput(event);
         if (!lastText) {
           return;
         }
+
+        // Consume the RP context only after capturing a valid assistant reply.
+        activeRpContextByChannel.delete(channelKey);
 
         const assistantTurn = store.appendTurn({
           sessionId: session.id,
