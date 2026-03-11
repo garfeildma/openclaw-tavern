@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-03-11
+
+### Improved
+- Added automatic Telegram media follow-ups for native RP sessions: when a user message implies "show me" or "let me hear your voice", the plugin can now auto-generate an image or voice reply after the normal assistant response.
+- Added `/rp sync-agent-persona` to manually write the current RP character into the OpenClaw agent `SOUL.md` managed block.
+- Added tests covering image and voice intent detection, Telegram auto media delivery, and manual agent persona synchronization.
+
 ## 2026-03-06
 
 ### Fixed

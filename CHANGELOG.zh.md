@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-03-11
+
+### Improved
+- 为 OpenClaw 原生 RP 的 Telegram 会话新增自动媒体补发能力：当用户消息表达出“想看照片”或“想听语音”的意思时，插件会在正常文字回复完成后自动补发图片或语音。
+- 新增 `/rp sync-agent-persona` 命令，可手动将当前 RP 角色写入 OpenClaw agent 的 `SOUL.md` 受管区块。
+- 补充测试，覆盖图片/语音意图识别、Telegram 自动媒体投递，以及手动同步 Agent 人设等场景。
+
 ## 2026-03-06
 
 ### Fixed

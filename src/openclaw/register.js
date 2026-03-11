@@ -12,6 +12,20 @@ import { SqliteStore } from "../store/sqliteStore.js";
 import { NodeSqliteCompat } from "./nodeSqliteCompat.js";
 import { parseRpCommand } from "../utils/commandParser.js";
 import { estimateTokens } from "../utils/tokenEstimator.js";
+import {
+  classifyMediaIntentWithModel,
+  detectPhotoRequestIntent,
+  detectVoiceRequestIntent,
+  inferPhotoStyleHint,
+  shouldClassifyMediaIntent,
+} from "../utils/imageIntent.js";
+import {
+  buildManagedSoulOverride,
+  resolvePersonaWorkspaceDir,
+  syncManagedSoulOverride,
+} from "./agentPersona.js";
+import { deliverAutoImageForTelegram, deliverAutoSpeakForTelegram } from "./autoImage.js";
+import { buildChannelSessionKey } from "../utils/sessionKey.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -438,6 +452,50 @@ function buildHookRouterContext(event, hookCtx) {
     content: asString(event?.content),
     attachments: [],
   };
+}
+
+function resolveHookThreadId(event, hookCtx) {
+  const raw = event?.metadata?.threadId ?? hookCtx?.messageThreadId;
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    return raw;
+  }
+  if (typeof raw === "string" && /^-?\d+$/.test(raw)) {
+    return Number(raw);
+  }
+  return undefined;
+}
+
+async function resolveAutoMediaDecisions({ router, autoMedia, logger }) {
+  if (!autoMedia) {
+    return { imageStyleHint: null, shouldSpeak: false };
+  }
+
+  let imageStyleHint = autoMedia.imageStyleHint || null;
+  let shouldSpeak = Boolean(autoMedia.shouldSpeak);
+
+  if (
+    autoMedia.needsModelCheck &&
+    router?.modelProvider?.generate &&
+    autoMedia.userContent
+  ) {
+    const classified = await classifyMediaIntentWithModel({
+      modelProvider: router.modelProvider,
+      text: autoMedia.userContent,
+      allowImage: Boolean(router?.imageProvider?.generate),
+      allowVoice: Boolean(router?.ttsProvider?.synthesize),
+    });
+    if (classified.image && !imageStyleHint) {
+      imageStyleHint = inferPhotoStyleHint(autoMedia.userContent);
+    }
+    if (classified.voice) {
+      shouldSpeak = true;
+    }
+    logger?.info?.(
+      `[openclaw-rp] auto media classifier result image=${classified.image} voice=${classified.voice}`,
+    );
+  }
+
+  return { imageStyleHint, shouldSpeak };
 }
 
 function buildRouteKey(channelId, accountId, peer) {
@@ -892,6 +950,51 @@ async function handleRouterCommandWithImportFallback(router, ctx, mediaCache, op
   );
   return {
     response: rewriteImportMissingAttachmentMessage(response, commandBody),
+  };
+}
+
+async function handleSyncAgentPersonaCommand({ store, ctx, apiConfig, logger }) {
+  const routerCtx = buildCommandContext(ctx);
+  const channelSessionKey = buildChannelSessionKey(routerCtx);
+  const session = store?.getSessionByChannelKey?.(channelSessionKey);
+  if (!session) {
+    return {
+      ok: false,
+      code: "RP_SESSION_NOT_FOUND",
+      message: "No active RP session in this channel",
+    };
+  }
+
+  const bundle = store.getSessionAssetBundle(session.id);
+  const cardDetail = bundle?.card?.detail || {};
+  const cardName = bundle?.card?.name || cardDetail?.name || "Character";
+  const workspaceDir = resolvePersonaWorkspaceDir({
+    workspaceDir: ctx.workspaceDir,
+    apiConfig,
+  });
+  const managedSoul = buildManagedSoulOverride({
+    cardDetail,
+    cardName,
+    userName: routerCtx.userId || "User",
+  });
+  const result = await syncManagedSoulOverride({
+    workspaceDir,
+    managedContent: managedSoul,
+  });
+
+  logger?.info?.(
+    `[openclaw-rp] synced active persona to SOUL.md session=${session.id} workspace=${workspaceDir}`,
+  );
+
+  return {
+    ok: true,
+    message: "已同步当前角色到 Agent 人设",
+    data: {
+      workspace_dir: workspaceDir,
+      soul_path: result.soulPath,
+      updated: result.updated,
+      character_name: cardName,
+    },
   };
 }
 
@@ -1534,11 +1637,38 @@ export default {
       handler: async (ctx) => {
         await ensureInitialized();
         try {
-          const { response } = await handleRouterCommandWithImportFallback(router, ctx, mediaCache, {
+          const commandBody = String(ctx.commandBody || "/rp");
+          const parsedCommand = parseRpCommand(commandBody);
+          if (parsedCommand?.command === "sync-agent-persona") {
+            const response = await handleSyncAgentPersonaCommand({
+              store,
+              ctx,
+              apiConfig: api.config,
+              logger: api.logger,
+            });
+            return {
+              text: formatResponseText(response),
+            };
+          }
+
+          let { response } = await handleRouterCommandWithImportFallback(router, ctx, mediaCache, {
             inboundMediaDir,
             usedFallbackPaths,
             logger: api.logger,
           });
+          if (
+            parsedCommand?.command === "help" &&
+            response?.ok &&
+            typeof response?.data?.text === "string"
+          ) {
+            response = {
+              ...response,
+              data: {
+                ...response.data,
+                text: `${response.data.text}\n  /rp sync-agent-persona  将当前角色写入 Agent 的 SOUL.md（手动触发）`,
+              },
+            };
+          }
           scheduleFollowupIfNeeded(response, ctx, api.logger, api.runtime.channel?.telegram);
           const mediaRaw = response?.data?.audio_url || response?.data?.image_url;
           const mediaUrl = mediaRaw ? await materializeMediaUrl(mediaRaw, inboundMediaDir) : undefined;
@@ -1614,6 +1744,20 @@ export default {
           return;
         }
 
+        const isTelegramAutoMedia = routerCtx.channelType === "telegram";
+        const autoImageIntent =
+          isTelegramAutoMedia && router?.imageProvider?.generate
+            ? detectPhotoRequestIntent(content)
+            : null;
+        const autoVoiceIntent =
+          isTelegramAutoMedia && router?.ttsProvider?.synthesize
+            ? detectVoiceRequestIntent(content)
+            : null;
+        const shouldModelCheckAutoMedia =
+          isTelegramAutoMedia &&
+          router?.modelProvider?.generate &&
+          shouldClassifyMediaIntent(content);
+
         // Append user turn to RP session
         const userTurn = store.appendTurn({
           sessionId: session.id,
@@ -1631,6 +1775,17 @@ export default {
           session,
           routerCtx,
           userContent: content,
+          autoMedia:
+            (autoImageIntent || autoVoiceIntent || shouldModelCheckAutoMedia) && isTelegramAutoMedia
+              ? {
+                  imageStyleHint: autoImageIntent?.styleHint || null,
+                  shouldSpeak: Boolean(autoVoiceIntent),
+                  needsModelCheck: Boolean(shouldModelCheckAutoMedia),
+                  userContent: content,
+                  accountId: asString(hookCtx?.accountId),
+                  messageThreadId: resolveHookThreadId(event, hookCtx),
+                }
+              : null,
         }, channelKey);
 
         api.logger?.info?.(`[openclaw-rp] message_received: appended user turn to session ${session.id}, channelKey=${channelKey}`);
@@ -1734,6 +1889,45 @@ export default {
           tokenEstimate: estimateTokens(lastText),
         });
         sessionManager?.indexTurnEmbeddingAsync?.(session.id, assistantTurn);
+
+        if (rpCtx.autoMedia) {
+          void (async () => {
+            const decisions = await resolveAutoMediaDecisions({
+              router,
+              autoMedia: rpCtx.autoMedia,
+              logger: api.logger,
+            });
+
+            if (decisions.imageStyleHint && router?.imageProvider?.generate) {
+              void deliverAutoImageForTelegram({
+                router,
+                routerCtx: rpCtx.routerCtx,
+                styleHint: decisions.imageStyleHint,
+                inboundMediaDir,
+                telegramRuntime: api.runtime.channel?.telegram,
+                logger: api.logger,
+                accountId: rpCtx.autoMedia.accountId,
+                messageThreadId: rpCtx.autoMedia.messageThreadId,
+                apiConfig: api.config,
+                materializeMedia: materializeMediaUrl,
+              });
+            }
+
+            if (decisions.shouldSpeak && router?.ttsProvider?.synthesize) {
+              void deliverAutoSpeakForTelegram({
+                router,
+                routerCtx: rpCtx.routerCtx,
+                inboundMediaDir,
+                telegramRuntime: api.runtime.channel?.telegram,
+                logger: api.logger,
+                accountId: rpCtx.autoMedia.accountId,
+                messageThreadId: rpCtx.autoMedia.messageThreadId,
+                apiConfig: api.config,
+                materializeMedia: materializeMediaUrl,
+              });
+            }
+          })();
+        }
 
         api.logger?.info?.(`[openclaw-rp] llm_output: appended assistant turn to session ${session.id}, length=${lastText.length}`);
       } catch (err) {
