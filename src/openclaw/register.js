@@ -3,7 +3,6 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { emptyPluginConfigSchema } from "openclaw/plugin-sdk";
 import { asRPError } from "../errors.js";
 import { createRPPlugin } from "../plugin.js";
 import { createOpenAICompatibleProviders } from "../providers/openaiCompatible.js";
@@ -24,6 +23,13 @@ import {
   resolvePersonaWorkspaceDir,
   syncManagedSoulOverride,
 } from "./agentPersona.js";
+import {
+  OPENCLAW_RP_PLUGIN_ID,
+  createAgentImageTool,
+  getOpenClawRpPluginConfig,
+  normalizeAgentImageConfig,
+  openclawRpPluginConfigSchema,
+} from "./agentImageTool.js";
 import { deliverAutoImageForTelegram, deliverAutoSpeakForTelegram } from "./autoImage.js";
 import { buildChannelSessionKey } from "../utils/sessionKey.js";
 
@@ -1170,6 +1176,42 @@ function loadProviderFileConfig() {
   }
 }
 
+function loadOpenClawFileConfig() {
+  try {
+    const configPath = path.join(
+      process.env.HOME || "/root",
+      ".openclaw",
+      "openclaw.json",
+    );
+    const raw = require("node:fs").readFileSync(configPath, "utf8");
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveOpenClawFileConfig(config) {
+  const configPath = path.join(
+    process.env.HOME || "/root",
+    ".openclaw",
+    "openclaw.json",
+  );
+  require("node:fs").mkdirSync(path.dirname(configPath), { recursive: true });
+  require("node:fs").writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, "utf8");
+}
+
+function ensureObjectPath(root, pathTokens) {
+  let cur = root;
+  for (const token of pathTokens) {
+    if (!isObject(cur[token])) {
+      cur[token] = {};
+    }
+    cur = cur[token];
+  }
+  return cur;
+}
+
 function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -1369,10 +1411,11 @@ function extractInheritedProviderConfig(apiConfig) {
   };
 }
 
-function resolveProviderConfig(apiConfig) {
+function resolveProviderConfig(apiConfig, overrides = {}) {
   // Try to read provider config from JSON file (most reliable for systemd-managed gateways)
   const fileConfig = loadProviderFileConfig();
   const inherited = extractInheritedProviderConfig(apiConfig);
+  const forcedProvider = normalizeProviderHint(overrides.provider);
   const explicitProvider = normalizeProviderHint(
     firstNonEmptyValue([
       process.env.OPENCLAW_RP_PROVIDER,
@@ -1380,7 +1423,10 @@ function resolveProviderConfig(apiConfig) {
       fileConfig.llm_provider,
     ]),
   );
-  const selectedProvider = inherited.providerHint || explicitProvider;
+  const selectedProvider =
+    forcedProvider && forcedProvider !== "inherit"
+      ? forcedProvider
+      : inherited.providerHint || explicitProvider;
 
   const geminiApiKey =
     inherited.gemini.apiKey ||
@@ -1396,6 +1442,14 @@ function resolveProviderConfig(apiConfig) {
   const preferGemini =
     selectedProvider === "gemini" ||
     (!selectedProvider && geminiApiKey && !openaiApiKey);
+
+  if (selectedProvider === "gemini" && !geminiApiKey) {
+    return {};
+  }
+
+  if (selectedProvider === "openai" && !openaiApiKey) {
+    return {};
+  }
 
   if (preferGemini && geminiApiKey) {
     return createGeminiProviders({
@@ -1416,6 +1470,7 @@ function resolveProviderConfig(apiConfig) {
         fileConfig.gemini_tts_voice ||
         process.env.GEMINI_TTS_VOICE,
       imageModel:
+        overrides.imageModel ||
         inherited.gemini.imageModel ||
         process.env.OPENCLAW_RP_GEMINI_IMAGE_MODEL ||
         fileConfig.gemini_image_model ||
@@ -1471,6 +1526,7 @@ function resolveProviderConfig(apiConfig) {
         fileConfig.gemini_tts_voice ||
         process.env.GEMINI_TTS_VOICE,
       imageModel:
+        overrides.imageModel ||
         inherited.gemini.imageModel ||
         process.env.OPENCLAW_RP_GEMINI_IMAGE_MODEL ||
         fileConfig.gemini_image_model ||
@@ -1529,6 +1585,7 @@ function resolveProviderConfig(apiConfig) {
       fileConfig.openai_tts_model ||
       process.env.OPENAI_TTS_MODEL,
     imageModel:
+      overrides.imageModel ||
       inherited.openai.imageModel ||
       process.env.OPENCLAW_RP_OPENAI_IMAGE_MODEL ||
       fileConfig.openai_image_model ||
@@ -1569,14 +1626,17 @@ export default {
   id: "openclaw-rp-plugin",
   name: "OpenClaw RP",
   description: "SillyTavern-compatible role-play command plugin for OpenClaw.",
-  configSchema: emptyPluginConfigSchema(),
+  configSchema: openclawRpPluginConfigSchema,
   register(api) {
     let db = null;
     let store = null;
     let sessionManager = null;
     let stateDir = null;
     let inboundMediaDir = null;
+    let generatedMediaDir = null;
     let router = null;
+    let agentImageToolConfig = normalizeAgentImageConfig(getOpenClawRpPluginConfig(api?.config));
+    let agentImageProviders = null;
     const mediaCache = createMediaCache();
     const usedFallbackPaths = new Set();
     const pendingInboundByKey = new Map();
@@ -1587,6 +1647,63 @@ export default {
     const activeRpContextByChannel = new Map();
     const rpContextTtlMs = 120000;
 
+    function getCurrentAgentImageConfig() {
+      return {
+        enabled: agentImageToolConfig?.enabled !== false,
+        provider: String(agentImageToolConfig?.provider || "inherit"),
+        imageModel: String(agentImageToolConfig?.imageModel || ""),
+      };
+    }
+
+    function updateAgentImageConfig(patch = {}) {
+      const fileConfig = loadOpenClawFileConfig();
+      const rootConfig =
+        isObject(fileConfig) && Object.keys(fileConfig).length > 0
+          ? fileConfig
+          : isObject(api?.config)
+            ? api.config
+            : {};
+      const currentConfig = normalizeAgentImageConfig(getOpenClawRpPluginConfig(rootConfig));
+      const nextConfig = {
+        enabled: patch.enabled ?? currentConfig.enabled,
+        provider: patch.provider ?? currentConfig.provider,
+        imageModel: patch.imageModel ?? currentConfig.imageModel,
+      };
+
+      const pluginEntry = ensureObjectPath(rootConfig, ["plugins", "entries", OPENCLAW_RP_PLUGIN_ID]);
+      const pluginConfig =
+        pluginEntry.config && typeof pluginEntry.config === "object" && !Array.isArray(pluginEntry.config)
+          ? { ...pluginEntry.config }
+          : {};
+      const agentImageConfig =
+        pluginConfig.agentImage &&
+        typeof pluginConfig.agentImage === "object" &&
+        !Array.isArray(pluginConfig.agentImage)
+          ? { ...pluginConfig.agentImage }
+          : {};
+
+      agentImageConfig.enabled = nextConfig.enabled;
+      agentImageConfig.provider = nextConfig.provider;
+      if (nextConfig.imageModel) {
+        agentImageConfig.imageModel = nextConfig.imageModel;
+      } else {
+        delete agentImageConfig.imageModel;
+      }
+      pluginConfig.agentImage = agentImageConfig;
+      pluginEntry.config = pluginConfig;
+
+      saveOpenClawFileConfig(rootConfig);
+      api.config = rootConfig;
+      agentImageToolConfig = nextConfig;
+      agentImageProviders = nextConfig.enabled
+        ? resolveProviderConfig(api?.config, {
+            provider: nextConfig.provider,
+            imageModel: nextConfig.imageModel,
+          })
+        : {};
+      return nextConfig;
+    }
+
     async function ensureInitialized() {
       if (router) {
         return;
@@ -1594,6 +1711,7 @@ export default {
       const rootStateDir = api.runtime.state.resolveStateDir(api.config);
       stateDir = path.join(rootStateDir, "openclaw-rp");
       inboundMediaDir = path.join(rootStateDir, "media", "inbound");
+      generatedMediaDir = path.join(rootStateDir, "media", "generated");
       await mkdir(stateDir, { recursive: true });
       db = new NodeSqliteCompat(path.join(stateDir, "rp.sqlite"));
       store = new SqliteStore(db);
@@ -1621,13 +1739,37 @@ export default {
       }
 
       const providers = resolveProviderConfig(api?.config);
+      agentImageToolConfig = normalizeAgentImageConfig(getOpenClawRpPluginConfig(api?.config));
+      agentImageProviders = agentImageToolConfig.enabled
+        ? resolveProviderConfig(api?.config, {
+            provider: agentImageToolConfig.provider,
+            imageModel: agentImageToolConfig.imageModel,
+          })
+        : {};
       const plugin = createRPPlugin({
         store,
         ...providers,
         logger: api.logger,
+        getAgentImageConfig: getCurrentAgentImageConfig,
+        updateAgentImageConfig,
       });
       router = plugin.services.router;
       sessionManager = plugin.services.sessionManager;
+    }
+
+    if (typeof api.registerTool === "function") {
+      api.registerTool(
+        createAgentImageTool({
+          ensureReady: ensureInitialized,
+          getConfig: () => agentImageToolConfig,
+          getImageProvider: () => agentImageProviders?.imageProvider || null,
+          getMediaDir: () => generatedMediaDir || inboundMediaDir,
+          materializeMedia: materializeMediaUrl,
+          logger: api.logger,
+        }),
+      );
+    } else {
+      api.logger?.warn?.("[openclaw-rp] api.registerTool unavailable; native agent image tool disabled");
     }
 
     api.registerCommand({

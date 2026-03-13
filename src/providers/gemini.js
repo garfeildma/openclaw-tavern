@@ -232,7 +232,7 @@ export function createGeminiProviders(config = {}) {
         },
 
         imageProvider: {
-            async generate({ prompt, style }) {
+            async generate({ prompt, style, model }) {
                 const mergedPrompt = style ? `${prompt}\n\nStyle: ${style}` : prompt;
                 const body = {
                     contents: [
@@ -246,7 +246,7 @@ export function createGeminiProviders(config = {}) {
                 };
 
                 const json = await geminiPost(
-                    `${geminiBase}/models/${imageModel}:generateContent`,
+                    `${geminiBase}/models/${model || imageModel}:generateContent`,
                     { apiKey, body, timeoutMs: config.imageTimeoutMs || 120000 },
                 );
 
@@ -272,7 +272,7 @@ export function createGeminiProviders(config = {}) {
                 for (const part of parts) {
                     if (part?.inlineData?.data && part?.inlineData?.mimeType?.startsWith("image/")) {
                         const imageUrl = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
-                        return { imageUrl, raw: { model: imageModel, finishReason: candidate.finishReason } };
+                        return { imageUrl, raw: { model: model || imageModel, finishReason: candidate.finishReason } };
                     }
                     if (part?.text) {
                         textContent += part.text;

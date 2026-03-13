@@ -160,6 +160,56 @@ test("image command uses image-only wrapper prompt", async () => {
   assert.equal(capturedPrompt.includes("Scene:"), true);
 });
 
+test("agent-image command reports current config", async () => {
+  const plugin = createRPPlugin({
+    getAgentImageConfig() {
+      return {
+        enabled: true,
+        provider: "openai",
+        imageModel: "grok-imagine-1.0",
+      };
+    },
+  });
+
+  const result = await plugin.hooks.message_received(makeCtx("/rp agent-image"));
+  assert.equal(result.response.ok, true);
+  assert.match(result.response.data.text, /Agent 生图配置/);
+  assert.match(result.response.data.text, /provider: openai/);
+  assert.match(result.response.data.text, /grok-imagine-1\.0/);
+});
+
+test("agent-image command updates config through callback", async () => {
+  let capturedPatch = null;
+  const plugin = createRPPlugin({
+    getAgentImageConfig() {
+      return {
+        enabled: true,
+        provider: "inherit",
+        imageModel: "",
+      };
+    },
+    async updateAgentImageConfig(patch) {
+      capturedPatch = patch;
+      return {
+        enabled: true,
+        provider: "gemini",
+        imageModel: "gemini-3.1-flash-image-preview",
+      };
+    },
+  });
+
+  const result = await plugin.hooks.message_received(
+    makeCtx("/rp agent-image --provider gemini --model gemini-3.1-flash-image-preview"),
+  );
+  assert.equal(result.response.ok, true);
+  assert.deepEqual(capturedPatch, {
+    provider: "gemini",
+    imageModel: "gemini-3.1-flash-image-preview",
+  });
+  assert.match(result.response.data.text, /配置已更新/);
+  assert.match(result.response.data.text, /provider: gemini/);
+});
+
 test("paused session ignores normal messages", async () => {
   const plugin = createRPPlugin({
     modelProvider: {

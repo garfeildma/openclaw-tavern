@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-03-13
+
+### Improved
+- 新增可选 agent tool `rp_generate_image`，让 OpenClaw 原生 agent 在非 `/rp` 普通对话中也能调用插件的生图 provider，并通过 `MEDIA:` 回传图片到当前 IM 会话。
+- 新增插件配置 `agentImage.enabled / provider / imageModel`，可单独指定 agent 生图所使用的 provider 与模型，不影响 `/rp` 对话主模型。
+- image provider 现在支持按调用覆盖 `imageModel`，便于在同一 provider 栈下为不同能力分配不同生图模型。
+
 ## 2026-03-11
 
 ### Improved

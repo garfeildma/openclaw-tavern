@@ -6,6 +6,26 @@
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
-    "properties": {}
+    "properties": {
+      "agentImage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "type": "boolean",
+            "default": true
+          },
+          "provider": {
+            "type": "string",
+            "enum": ["inherit", "openai", "gemini"],
+            "default": "inherit"
+          },
+          "imageModel": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
   }
 }

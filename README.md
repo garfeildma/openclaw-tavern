@@ -45,6 +45,8 @@ OpenClaw RP Plugin is a roleplay-focused OpenClaw plugin with first-class SillyT
 
 - `/rp speak`: TTS from latest assistant reply
 - `/rp image`: image generation from role context, supports `--prompt` / `--style`
+- `/rp agent-image`: inspect or switch native-agent image provider / model / enabled state
+- Optional agent tool: `rp_generate_image`, which lets the native OpenClaw agent generate and return images in normal non-`/rp` chats
 - Built-in multimodal rate limit (default 5s window)
 
 ### 5. Native OpenClaw Integration
@@ -111,6 +113,7 @@ Note: install entry names vary by gateway version (plugin manager button vs admi
 - `/rp retry [--edit "..."]`
 - `/rp speak`
 - `/rp image [--prompt "..."] [--style "..."]`
+- `/rp agent-image [--provider inherit|openai|gemini] [--model "..."] [--clear-model] [--enable|--disable]`
 - `/rp companion-nudge [--reason "..."] [--idle-minutes N] [--mode balanced|checkin|question|report] [--force]`
 - `/rp pause` / `/rp resume` / `/rp end`
 
@@ -150,6 +153,65 @@ Note: install entry names vary by gateway version (plugin manager button vs admi
 1. OpenClaw global `api.config`
 2. `~/.openclaw/openclaw-rp/provider.json`
 3. Environment variables (`OPENCLAW_RP_*`, `OPENAI_*`, `GEMINI_*`)
+
+### Agent Image Tool Config
+
+Add plugin config under your OpenClaw config:
+
+```json
+{
+  "plugins": {
+    "entries": {
+      "openclaw-rp-plugin": {
+        "config": {
+          "agentImage": {
+            "enabled": true,
+            "provider": "openai",
+            "imageModel": "gpt-image-1"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+- `agentImage.enabled`: exposes the `rp_generate_image` tool
+- `agentImage.provider`: `inherit`, `openai`, or `gemini`
+- `agentImage.imageModel`: overrides only the agent image-generation model, without changing the `/rp` dialogue model
+
+To let an OpenClaw agent use it, also allow `rp_generate_image` in the agent tool config. On OpenClaw `2026.3.x`, the recommended config is:
+
+```json
+{
+  "tools": {
+    "profile": "messaging",
+    "alsoAllow": ["rp_generate_image"]
+  }
+}
+```
+
+The tool returns a `MEDIA:...` line, and the agent should keep that line in its final reply so the image is sent back to the current IM conversation.
+
+Notes:
+
+- If you use an OpenAI-compatible image endpoint such as Grok, set `agentImage.provider` to `openai`
+- If you use Google Gemini image generation, set `agentImage.provider` to `gemini`
+- For OpenAI-compatible gateways, `agentImage.imageModel` must exactly match the model `id` returned by `/v1/models`; for example, this gateway exposes `grok-imagine-1.0`, not `grok/grok-imagine-1.0`
+- After changing tool config or plugin schema, existing sessions may still have a stale tool list; send `/new` before testing again
+
+You can also switch it directly in native OpenClaw mode:
+
+```bash
+/rp agent-image
+/rp agent-image --provider openai --model grok-imagine-1.0
+/rp agent-image --provider gemini --model gemini-3.1-flash-image-preview
+/rp agent-image --clear-model
+/rp agent-image --disable
+/rp agent-image --enable
+```
+
+This command updates `plugins.entries.openclaw-rp-plugin.config.agentImage` and refreshes the live in-process agent image config immediately, without restarting the gateway.
 
 ## Roadmap
 

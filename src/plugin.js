@@ -26,6 +26,8 @@ export function createRPPlugin(options = {}) {
     ttsProvider: options.ttsProvider,
     imageProvider: options.imageProvider,
     rateLimiter: options.rateLimiter,
+    getAgentImageConfig: options.getAgentImageConfig,
+    updateAgentImageConfig: options.updateAgentImageConfig,
   });
 
   return {

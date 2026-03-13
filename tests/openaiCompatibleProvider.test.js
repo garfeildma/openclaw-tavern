@@ -45,6 +45,30 @@ test("openai-compatible image provider maps b64 payload", async () => {
   }
 });
 
+test("openai-compatible image provider allows per-call model override", async () => {
+  const originalFetch = global.fetch;
+  let capturedBody = null;
+  global.fetch = async (_url, init) => {
+    capturedBody = JSON.parse(String(init?.body || "{}"));
+    return {
+      ok: true,
+      async json() {
+        return {
+          data: [{ b64_json: "abcd" }],
+        };
+      },
+    };
+  };
+
+  try {
+    const { imageProvider } = createOpenAICompatibleProviders({ baseUrl: "https://example.com/v1" });
+    await imageProvider.generate({ prompt: "city", model: "gpt-image-1-high" });
+    assert.equal(capturedBody.model, "gpt-image-1-high");
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test("openai-compatible model provider supports array content", async () => {
   const originalFetch = global.fetch;
   global.fetch = async () => ({

@@ -234,12 +234,12 @@ export function createOpenAICompatibleProviders(config = {}) {
     },
 
     imageProvider: {
-      async generate({ prompt, style }) {
+      async generate({ prompt, style, model }) {
         const mergedPrompt = style ? `${prompt}\n\nStyle: ${style}` : prompt;
         const response = await post(`${baseUrl}/images/generations`, {
           apiKey,
           body: {
-            model: imageModel,
+            model: model || imageModel,
             prompt: mergedPrompt,
             size: config.imageSize || "1024x1024",
           },

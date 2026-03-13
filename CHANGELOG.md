@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-03-13
+
+### Improved
+- Added the optional `rp_generate_image` agent tool so native OpenClaw agents can generate images in normal non-`/rp` chats and return them to the current IM conversation through a `MEDIA:` line.
+- Added plugin config `agentImage.enabled / provider / imageModel` so operators can choose a dedicated provider and image model for agent-side generation without changing the `/rp` dialogue model.
+- Image providers now support per-call `imageModel` overrides, making it possible to split image workloads across different models within the same provider stack.
+
 ## 2026-03-11
 
 ### Improved

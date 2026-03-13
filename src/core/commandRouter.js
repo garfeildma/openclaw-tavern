@@ -63,6 +63,32 @@ function defaultCompanionIdleMinutes(sessionManager, fallback = 120) {
   return fallback;
 }
 
+function normalizeAgentImageProvider(value) {
+  const provider = String(value || "").trim().toLowerCase();
+  if (!provider) {
+    return null;
+  }
+  if (["inherit", "openai", "gemini"].includes(provider)) {
+    return provider;
+  }
+  throw new RPError(
+    RP_ERROR_CODES.BAD_REQUEST,
+    "--provider must be one of: inherit, openai, gemini",
+  );
+}
+
+function formatAgentImageConfigText(config = {}) {
+  const enabled = config?.enabled !== false;
+  const provider = String(config?.provider || "inherit").trim() || "inherit";
+  const imageModel = String(config?.imageModel || "").trim();
+  return [
+    "🖼️ Agent 生图配置",
+    `• enabled: ${enabled ? "true" : "false"}`,
+    `• provider: ${provider}`,
+    `• imageModel: ${imageModel || "(provider default)"}`,
+  ].join("\n");
+}
+
 function normalizeAttachment(attachment) {
   if (!attachment) return null;
   if (attachment.buffer && Buffer.isBuffer(attachment.buffer)) {
@@ -99,6 +125,7 @@ function helpText() {
     "  /rp retry [--edit \"...\"]  重新生成回复",
     "  /rp speak        语音合成最后一条回复",
     "  /rp image [--prompt \"...\"] [--style \"...\"]",
+    "  /rp agent-image [--provider inherit|openai|gemini] [--model \"...\"] [--clear-model] [--enable|--disable]",
     "  /rp companion-nudge [--reason \"...\"] [--idle-minutes N] [--mode balanced|checkin|question|report] [--force]",
     "  /rp pause / resume / end",
   ].join("\n");
@@ -409,13 +436,24 @@ async function resolveImportAttachment(ctx, options) {
 }
 
 export class CommandRouter {
-  constructor({ store, sessionManager, modelProvider, ttsProvider, imageProvider, rateLimiter }) {
+  constructor({
+    store,
+    sessionManager,
+    modelProvider,
+    ttsProvider,
+    imageProvider,
+    rateLimiter,
+    getAgentImageConfig,
+    updateAgentImageConfig,
+  }) {
     this.store = store;
     this.sessionManager = sessionManager;
     this.modelProvider = modelProvider;
     this.ttsProvider = ttsProvider;
     this.imageProvider = imageProvider;
     this.rateLimiter = rateLimiter || new InMemoryRateLimiter({ windowMs: 5000 });
+    this.getAgentImageConfig = getAgentImageConfig;
+    this.updateAgentImageConfig = updateAgentImageConfig;
   }
 
   async handleMessage(ctx) {
@@ -479,6 +517,8 @@ export class CommandRouter {
         return this.speak(nctx);
       case "image":
         return this.image(nctx, options);
+      case "agent-image":
+        return this.agentImage(nctx, options);
       case "companion-nudge":
         return this.companionNudge(nctx, options);
       default:
@@ -1036,6 +1076,68 @@ export class CommandRouter {
     return ok("🖼️ 图片已生成", {
       image_url: result?.imageUrl,
       prompt_used: String(scenePrompt || "").slice(0, 200),
+    });
+  }
+
+  async agentImage(_ctx, options) {
+    const current =
+      typeof this.getAgentImageConfig === "function"
+        ? this.getAgentImageConfig() || {}
+        : {};
+    const model = options?.model ?? options?.["image-model"];
+    const provider = options?.provider;
+    const clearModel = Boolean(options?.["clear-model"]);
+    const enable = Boolean(options?.enable);
+    const disable = Boolean(options?.disable);
+    const hasMutation =
+      model !== undefined || provider !== undefined || clearModel || enable || disable;
+
+    if (enable && disable) {
+      throw new RPError(RP_ERROR_CODES.BAD_REQUEST, "--enable and --disable cannot be used together");
+    }
+
+    if (!hasMutation) {
+      return ok("Agent image config", {
+        text: formatAgentImageConfigText(current),
+        config: current,
+      });
+    }
+
+    if (typeof this.updateAgentImageConfig !== "function") {
+      throw new RPError(
+        RP_ERROR_CODES.BAD_REQUEST,
+        "Agent image config commands are only available in native OpenClaw mode",
+      );
+    }
+
+    const patch = {};
+    const normalizedProvider = normalizeAgentImageProvider(provider);
+    if (normalizedProvider) {
+      patch.provider = normalizedProvider;
+    }
+    if (clearModel) {
+      patch.imageModel = "";
+    } else if (model !== undefined) {
+      const normalizedModel = String(model || "").trim();
+      if (!normalizedModel) {
+        throw new RPError(RP_ERROR_CODES.BAD_REQUEST, "--model must not be empty");
+      }
+      patch.imageModel = normalizedModel;
+    }
+    if (enable) {
+      patch.enabled = true;
+    } else if (disable) {
+      patch.enabled = false;
+    }
+
+    const next = await this.updateAgentImageConfig(patch);
+    const lines = [
+      "✅ Agent 生图配置已更新",
+      formatAgentImageConfigText(next),
+    ];
+    return ok(lines.join("\n"), {
+      text: lines.join("\n"),
+      config: next,
     });
   }
 
