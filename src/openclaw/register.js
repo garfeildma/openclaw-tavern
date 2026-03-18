@@ -380,9 +380,23 @@ function findRpContext(activeByAgentSessionKey, activeByChannel, ctx) {
       return bySession;
     }
   }
-  const channelKey = asString(ctx?.channelId).toLowerCase();
+  // Build a composite channelKey that includes conversationId to prevent
+  // cross-conversation leakage when the plugin runs in global mode.
+  const channelKey = [
+    asString(ctx?.channelId),
+    asString(ctx?.conversationId),
+  ].filter(Boolean).join(":").toLowerCase();
   if (channelKey) {
-    return activeByChannel.get(channelKey);
+    const byChannel = activeByChannel.get(channelKey);
+    if (byChannel) {
+      return byChannel;
+    }
+  }
+  // Legacy fallback: try channelId alone (without conversationId) so that
+  // contexts stored before this patch are still discoverable.
+  const legacyChannelKey = asString(ctx?.channelId).toLowerCase();
+  if (legacyChannelKey && legacyChannelKey !== channelKey) {
+    return activeByChannel.get(legacyChannelKey) || null;
   }
   return null;
 }
@@ -741,7 +755,10 @@ function resolveActiveSessionForPending(store, db, pending) {
     }
   }
 
-  return tryFindLatestSessionByChannel(db, store, channelType);
+  // Do NOT fall back to an arbitrary active session in the same channel type.
+  // This unconditional fallback caused cross-conversation message leakage
+  // when the plugin is loaded in global mode with multiple active RP sessions.
+  return null;
 }
 
 function formatDialogueHandledText(handled) {
@@ -1910,7 +1927,13 @@ export default {
         sessionManager?.indexTurnEmbeddingAsync?.(session.id, userTurn);
 
         // Store RP context for before_prompt_build to pick up
-        const channelKey = asString(hookCtx?.channelId || routerCtx.channelType).toLowerCase();
+        // Include conversationId in channelKey to isolate concurrent conversations.
+        // Previously this could degrade to just "telegram", causing all Telegram
+        // conversations to share a single rpCtx slot and overwrite each other.
+        const channelKey = [
+          asString(hookCtx?.channelId || routerCtx.channelType),
+          asString(hookCtx?.conversationId || routerCtx.platformContextId),
+        ].filter(Boolean).join(":").toLowerCase();
         cleanupRpContextMaps(activeRpContextByAgentSessionKey, activeRpContextByChannel, rpContextTtlMs);
         rememberRpContext(activeRpContextByAgentSessionKey, activeRpContextByChannel, {
           at: Date.now(),
