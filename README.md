@@ -56,6 +56,7 @@ OpenClaw RP Plugin is a roleplay-focused OpenClaw plugin with first-class SillyT
 - Inherits OpenClaw global model config when available
 - Supports OpenAI-compatible and Gemini provider stacks
 - SQLite persistence for assets, sessions, summaries, and memory vectors
+- Session isolation in global mode: RP contexts are keyed by both `conversationId` and `channelId` to prevent cross-conversation leakage
 
 ### ⭐ Focus: Companion Agent (Generative Agents Style) [WIP]
 
@@ -115,6 +116,8 @@ Note: install entry names vary by gateway version (plugin manager button vs admi
 - `/rp image [--prompt "..."] [--style "..."]`
 - `/rp agent-image [--provider inherit|openai|gemini] [--model "..."] [--clear-model] [--enable|--disable]`
 - `/rp companion-nudge [--reason "..."] [--idle-minutes N] [--mode balanced|checkin|question|report] [--force]`
+- `/rp sync-agent-persona` — write current RP character into the agent's `SOUL.md`
+- `/rp restore-agent-persona` — remove RP character preset from `SOUL.md`, restore original persona
 - `/rp pause` / `/rp resume` / `/rp end`
 
 ## Companion Quick Examples
@@ -212,6 +215,32 @@ You can also switch it directly in native OpenClaw mode:
 ```
 
 This command updates `plugins.entries.openclaw-rp-plugin.config.agentImage` and refreshes the live in-process agent image config immediately, without restarting the gateway.
+
+### Locale / i18n
+
+The plugin supports Chinese (`zh`) and English (`en`) for all user-facing messages (session status, persona sync, help text, etc.).
+
+Locale resolution priority:
+
+1. Environment variable `OPENCLAW_RP_LOCALE` (e.g. `en` or `zh`)
+2. `locale` field in `~/.openclaw/openclaw-rp/provider.json`
+3. `locale` field in `~/.openclaw/openclaw.json`
+4. System `LANG` environment variable (e.g. `en_US.UTF-8` → `en`)
+5. Default: `zh`
+
+Example — switch to English:
+
+```bash
+export OPENCLAW_RP_LOCALE=en
+```
+
+Or add to `~/.openclaw/openclaw.json`:
+
+```json
+{
+  "locale": "en"
+}
+```
 
 ## Roadmap
 

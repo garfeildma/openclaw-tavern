@@ -64,6 +64,22 @@ export function mergeManagedSoulOverride(existingContent, managedContent) {
   return `${managedBlock}\n\n${trimmed}\n`;
 }
 
+export function removeManagedSoulOverride(existingContent) {
+  const existing = String(existingContent || "");
+  if (!existing.includes(MANAGED_SOUL_BEGIN) || !existing.includes(MANAGED_SOUL_END)) {
+    return { content: existing, removed: false };
+  }
+  const cleaned = existing
+    .replace(
+      new RegExp(`${MANAGED_SOUL_BEGIN}[\\s\\S]*?${MANAGED_SOUL_END}`, "m"),
+      "",
+    )
+    .replace(/^\n{2,}/, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return { content: cleaned ? `${cleaned}\n` : "", removed: true };
+}
+
 export async function syncManagedSoulOverride({ workspaceDir, managedContent }) {
   if (!workspaceDir || !managedContent) {
     return { updated: false, soulPath: null };
@@ -84,6 +100,28 @@ export async function syncManagedSoulOverride({ workspaceDir, managedContent }) 
 
   await writeFile(soulPath, next, "utf8");
   return { updated: true, soulPath };
+}
+
+export async function restoreSoul({ workspaceDir }) {
+  if (!workspaceDir) {
+    return { restored: false, soulPath: null };
+  }
+
+  const soulPath = path.join(workspaceDir, "SOUL.md");
+  let existing = "";
+  try {
+    existing = await readFile(soulPath, "utf8");
+  } catch {
+    return { restored: false, soulPath, reason: "file_not_found" };
+  }
+
+  const { content, removed } = removeManagedSoulOverride(existing);
+  if (!removed) {
+    return { restored: false, soulPath, reason: "no_managed_block" };
+  }
+
+  await writeFile(soulPath, content, "utf8");
+  return { restored: true, soulPath };
 }
 
 function resolveDefaultAgentWorkspaceDir(env = process.env, homedir = os.homedir) {

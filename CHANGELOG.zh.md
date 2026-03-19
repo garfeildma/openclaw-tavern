@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-03-19
+
+### Improved
+- 新增国际化（i18n）支持，插件所有面向用户的提示语现在支持中文（`zh`）和英文（`en`）切换。
+- 语言解析优先级：环境变量 `OPENCLAW_RP_LOCALE` → `~/.openclaw/openclaw-rp/provider.json` 中的 `locale` 字段 → `~/.openclaw/openclaw.json` 中的 `locale` 字段 → 系统 `LANG` 环境变量 → 默认 `zh`。
+- 新增 `src/openclaw/i18n.js` 模块，统一管理所有可翻译字符串，通过 `t(key)` 函数访问。
+- 新增 `/rp restore-agent-persona` 命令，可从 `SOUL.md` 中移除 RP 角色预设块，恢复 Agent 原始人设。
+
+### Fixed
+- 修复插件在全局模式下的会话隔离问题：RP 上下文现在同时基于 `conversationId` 和 `channelId` 进行键值隔离，防止不同会话之间的消息串扰（如一个 RP 会话的回复错误出现在另一个会话中）。
+- 移除 `resolveActiveSessionForPending` 中无条件回退到同 channel type 最新活跃会话的逻辑，该逻辑是跨会话消息泄漏的根本原因。
+
 ## 2026-03-13
 
 ### Improved

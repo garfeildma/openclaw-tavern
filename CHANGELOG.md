@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-03-19
+
+### Improved
+- Added internationalization (i18n) support for all user-facing messages in the RP plugin. Supported locales: Chinese (`zh`) and English (`en`).
+- Locale resolution priority: `OPENCLAW_RP_LOCALE` env var → `locale` field in `~/.openclaw/openclaw-rp/provider.json` → `locale` field in `~/.openclaw/openclaw.json` → system `LANG` env var → default `zh`.
+- New module `src/openclaw/i18n.js` centralizes all translatable strings with `t(key)` accessor function.
+- Added `/rp restore-agent-persona` command to remove the RP character preset block from `SOUL.md`, restoring the agent's original persona.
+
+### Fixed
+- Fixed session isolation when the plugin runs in global mode: RP context now keys on `conversationId` in addition to `channelId`, preventing cross-conversation message leakage where replies from one RP session leaked into another.
+- Removed the unconditional fallback to the latest active session in `resolveActiveSessionForPending`, which was the root cause of cross-conversation pollution.
+
 ## 2026-03-13
 
 ### Improved

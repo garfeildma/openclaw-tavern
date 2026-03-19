@@ -21,8 +21,10 @@ import {
 import {
   buildManagedSoulOverride,
   resolvePersonaWorkspaceDir,
+  restoreSoul,
   syncManagedSoulOverride,
 } from "./agentPersona.js";
+import { resolveLocale, t } from "./i18n.js";
 import {
   OPENCLAW_RP_PLUGIN_ID,
   createAgentImageTool,
@@ -768,12 +770,12 @@ function formatDialogueHandledText(handled) {
   if (handled.ignored) {
     const status = asString(handled.status).toLowerCase();
     if (status === "paused") {
-      return "当前 RP 会话已暂停（/rp resume 可恢复）。";
+      return t("session_paused");
     }
     if (status === "ended") {
-      return "当前 RP 会话已结束（/rp start 可重新开始）。";
+      return t("session_ended");
     }
-    return "当前 RP 会话暂不可用。";
+    return t("session_unavailable");
   }
   return asString(handled.content);
 }
@@ -1011,12 +1013,47 @@ async function handleSyncAgentPersonaCommand({ store, ctx, apiConfig, logger }) 
 
   return {
     ok: true,
-    message: "已同步当前角色到 Agent 人设",
+    message: t("sync_persona_success"),
     data: {
       workspace_dir: workspaceDir,
       soul_path: result.soulPath,
       updated: result.updated,
       character_name: cardName,
+    },
+  };
+}
+
+async function handleRestoreAgentPersonaCommand({ ctx, apiConfig, logger }) {
+  const workspaceDir = resolvePersonaWorkspaceDir({
+    workspaceDir: ctx.workspaceDir,
+    apiConfig,
+  });
+  const result = await restoreSoul({ workspaceDir });
+
+  if (!result.restored) {
+    const reason =
+      result.reason === "file_not_found"
+        ? t("restore_soul_file_not_found")
+        : result.reason === "no_managed_block"
+          ? t("restore_soul_no_managed_block")
+          : t("restore_soul_failed");
+    return {
+      ok: false,
+      code: "RP_RESTORE_SKIPPED",
+      message: reason,
+    };
+  }
+
+  logger?.info?.(
+    `[openclaw-rp] restored SOUL.md — removed RP persona override workspace=${workspaceDir}`,
+  );
+
+  return {
+    ok: true,
+    message: t("restore_persona_success"),
+    data: {
+      workspace_dir: workspaceDir,
+      soul_path: result.soulPath,
     },
   };
 }
@@ -1734,6 +1771,8 @@ export default {
       store = new SqliteStore(db);
       store.migrate();
       const fileConfig = loadProviderFileConfig();
+      const openclawConfig = loadOpenClawFileConfig();
+      resolveLocale(fileConfig, openclawConfig);
       const vectorExtensionPath =
         process.env.OPENCLAW_RP_SQLITE_VECTOR_EXTENSION ||
         process.env.RP_SQLITE_VECTOR_EXTENSION ||
@@ -1810,6 +1849,17 @@ export default {
             };
           }
 
+          if (parsedCommand?.command === "restore-agent-persona") {
+            const response = await handleRestoreAgentPersonaCommand({
+              ctx,
+              apiConfig: api.config,
+              logger: api.logger,
+            });
+            return {
+              text: formatResponseText(response),
+            };
+          }
+
           let { response } = await handleRouterCommandWithImportFallback(router, ctx, mediaCache, {
             inboundMediaDir,
             usedFallbackPaths,
@@ -1824,7 +1874,7 @@ export default {
               ...response,
               data: {
                 ...response.data,
-                text: `${response.data.text}\n  /rp sync-agent-persona  将当前角色写入 Agent 的 SOUL.md（手动触发）`,
+                text: `${response.data.text}\n  /rp sync-agent-persona     ${t("help_sync_agent_persona")}\n  /rp restore-agent-persona  ${t("help_restore_agent_persona")}`,
               },
             };
           }
