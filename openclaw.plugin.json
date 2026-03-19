@@ -1,8 +1,23 @@
 {
-  "id": "openclaw-rp-plugin",
-  "name": "OpenClaw RP Plugin",
-  "description": "SillyTavern-compatible role-play command plugin for OpenClaw.",
+  "id": "openclaw-tavern-plugin",
+  "name": "OpenClaw SillyTavern Plugin",
+  "description": "SillyTavern-compatible role-play command plugin for OpenClaw with long memory, multimodal output, and Generative-Agents-style companion.",
   "version": "0.1.0",
+  "author": "garfeildma",
+  "homepage": "https://github.com/garfeildma/openclaw-tavern",
+  "license": "MIT",
+  "tags": [
+    "roleplay",
+    "sillytavern",
+    "companion",
+    "tts",
+    "image-generation",
+    "long-memory"
+  ],
+  "clawhub": {
+    "slug": "openclaw-tavern-plugin",
+    "category": "roleplay"
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -17,7 +32,11 @@
           },
           "provider": {
             "type": "string",
-            "enum": ["inherit", "openai", "gemini"],
+            "enum": [
+              "inherit",
+              "openai",
+              "gemini"
+            ],
             "default": "inherit"
           },
           "imageModel": {

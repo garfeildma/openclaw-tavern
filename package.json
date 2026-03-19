@@ -1,7 +1,14 @@
 {
   "name": "openclaw-rp-plugin",
   "version": "0.1.0",
-  "private": true,
+  "description": "SillyTavern-compatible roleplay plugin for OpenClaw with long memory, multimodal output, and Generative-Agents-style companion.",
+  "author": "garfeildma",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/garfeildma/openclaw-tavern.git"
+  },
+  "keywords": ["openclaw", "roleplay", "sillytavern", "companion", "tts", "image-generation", "long-memory"],
   "type": "module",
   "main": "./src/index.js",
   "exports": {
@@ -35,6 +42,7 @@
   },
   "scripts": {
     "test": "node --test",
-    "smoke": "node examples/smoke-run.js"
+    "smoke": "node examples/smoke-run.js",
+    "clawhub:publish": "clawhub publish . --slug openclaw-rp-plugin --name 'OpenClaw RP Plugin' --version 0.1.0 --tags roleplay,sillytavern,companion,tts,image-generation,long-memory"
   }
 }

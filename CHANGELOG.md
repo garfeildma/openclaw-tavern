@@ -2,6 +2,12 @@
 
 ## 2026-03-19
 
+### Added
+- Added `SKILL.md` for ClawHub marketplace publishing, following the standard YAML frontmatter + markdown body format.
+- Added ClawHub metadata to `openclaw.plugin.json` (author, homepage, license, tags, slug, category).
+- Added npm registry metadata to `package.json` (description, author, license, repository, keywords).
+- Added `clawhub:publish` convenience script for one-command publishing.
+
 ### Improved
 - Added internationalization (i18n) support for all user-facing messages in the RP plugin. Supported locales: Chinese (`zh`) and English (`en`).
 - Locale resolution priority: `OPENCLAW_RP_LOCALE` env var → `locale` field in `~/.openclaw/openclaw-rp/provider.json` → `locale` field in `~/.openclaw/openclaw.json` → system `LANG` env var → default `zh`.
