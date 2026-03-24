@@ -286,5 +286,84 @@ export function createGeminiProviders(config = {}) {
                 throw new Error("Image response missing image payload");
             },
         },
+
+        videoProvider: {
+            async generate({ prompt, style, durationSeconds }) {
+                const mergedPrompt = style ? `${prompt}\n\nStyle: ${style}` : prompt;
+                const rawVideoModel = config.videoModel || "veo-3.1-fast-generate-preview";
+                const videoModel = rawVideoModel.replace(/^models\//, "");
+                const duration = durationSeconds || 4;
+
+                // Step 1: Start the long-running video generation operation
+                const startBody = {
+                    instances: [{
+                        prompt: mergedPrompt,
+                    }],
+                    parameters: {
+                        aspectRatio: "16:9",
+                        durationSeconds: Number(duration),
+                        personGeneration: "allow_all",
+                    },
+                };
+
+                const startResponse = await geminiPost(
+                    `${geminiBase}/models/${videoModel}:predictLongRunning`,  // videoModel is always without models/ prefix
+                    { apiKey, body: startBody, timeoutMs: 30000 },
+                );
+
+                const operationName = startResponse?.name;
+                if (!operationName) {
+                    throw new Error("Video generation did not return an operation name");
+                }
+
+                // Step 2: Poll until done
+                const pollTimeoutMs = config.videoTimeoutMs || 300000; // 5 min default
+                const pollIntervalMs = 8000;
+                const deadline = Date.now() + pollTimeoutMs;
+
+                while (Date.now() < deadline) {
+                    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+
+                    const pollUrl = `${geminiBase}/${operationName}`;
+                    const pollResponse = await fetch(pollUrl, {
+                        method: "GET",
+                        headers: { "x-goog-api-key": apiKey },
+                    });
+                    if (!pollResponse.ok) {
+                        const errText = await pollResponse.text();
+                        throw new Error(`Video poll failed HTTP ${pollResponse.status}: ${errText}`);
+                    }
+                    const pollJson = await pollResponse.json();
+
+                    if (pollJson.done) {
+                        // Extract video URI
+                        const videoUri =
+                            pollJson?.response?.generateVideoResponse?.generatedSamples?.[0]?.video?.uri;
+                        if (!videoUri) {
+                            const errorMsg = pollJson?.error?.message || "Video generation returned no video";
+                            throw new Error(errorMsg);
+                        }
+
+                        // Download the video bytes
+                        const downloadResponse = await fetch(`${videoUri}`, {
+                            headers: { "x-goog-api-key": apiKey },
+                            redirect: "follow",
+                        });
+                        if (!downloadResponse.ok) {
+                            throw new Error(`Video download failed HTTP ${downloadResponse.status}`);
+                        }
+                        const videoBuffer = Buffer.from(await downloadResponse.arrayBuffer());
+                        const videoUrl = `data:video/mp4;base64,${videoBuffer.toString("base64")}`;
+                        return { videoUrl, durationSeconds: duration, raw: { model: videoModel } };
+                    }
+
+                    if (pollJson.error) {
+                        throw new Error(`Video generation error: ${pollJson.error.message || JSON.stringify(pollJson.error)}`);
+                    }
+                }
+
+                throw new Error("Video generation timed out");
+            },
+        },
     };
 }

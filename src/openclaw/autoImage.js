@@ -1,3 +1,5 @@
+import { t } from "./i18n.js";
+
 function extractTelegramChatId(input) {
   const raw = typeof input === "string" ? input.trim() : String(input || "").trim();
   if (!raw) {
@@ -206,9 +208,9 @@ export async function deliverAutoImageForTelegram({
     messageThreadId,
     apiConfig,
     materializeMedia,
-    placeholderText: "图片生成中",
-    successFallbackText: "图片已生成，见下一条。",
-    failureText: "图片生成失败",
+    placeholderText: t("auto_image_generating"),
+    successFallbackText: t("auto_image_success"),
+    failureText: t("auto_image_failed"),
     buildResponse: async () => await router.image(routerCtx, styleHint ? { style: styleHint } : undefined),
     extractMediaUrl: (response) => response?.data?.image_url,
   });
@@ -238,13 +240,49 @@ export async function deliverAutoSpeakForTelegram({
     messageThreadId,
     apiConfig,
     materializeMedia,
-    placeholderText: "语音生成中",
-    successFallbackText: "语音已生成，见下一条。",
-    failureText: "语音生成失败",
+    placeholderText: t("auto_voice_generating"),
+    successFallbackText: t("auto_voice_success"),
+    failureText: t("auto_voice_failed"),
     buildResponse: async () => await router.speak(routerCtx),
     extractMediaUrl: (response) => response?.data?.audio_url,
     sendOptions: {
       asVoice: true,
+    },
+  });
+}
+
+export async function deliverAutoVideoForTelegram({
+  router,
+  routerCtx,
+  styleHint,
+  inboundMediaDir,
+  telegramRuntime,
+  logger,
+  accountId,
+  messageThreadId,
+  apiConfig,
+  materializeMedia,
+}) {
+  if (typeof router?.video !== "function") {
+    return { ok: false, reason: "unsupported-context" };
+  }
+  return await deliverDeferredMediaForTelegram({
+    router,
+    routerCtx,
+    inboundMediaDir,
+    telegramRuntime,
+    logger,
+    accountId,
+    messageThreadId,
+    apiConfig,
+    materializeMedia,
+    placeholderText: t("auto_video_generating"),
+    successFallbackText: t("auto_video_success"),
+    failureText: t("auto_video_failed"),
+    buildResponse: async () => await router.video(routerCtx, styleHint ? { style: styleHint } : undefined),
+    extractMediaUrl: (response) => response?.data?.video_url,
+    sendOptions: {
+      asVideo: true,
     },
   });
 }

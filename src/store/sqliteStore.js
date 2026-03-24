@@ -472,7 +472,7 @@ export class SqliteStore {
       .prepare(
         `SELECT id
          FROM rp_sessions
-         WHERE channel_session_key = ? AND status != 'ended'
+         WHERE lower(channel_session_key) = lower(?) AND status != 'ended'
          ORDER BY updated_at DESC
          LIMIT 1`,
       )

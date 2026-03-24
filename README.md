@@ -45,18 +45,21 @@ OpenClaw RP Plugin is a roleplay-focused OpenClaw plugin with first-class SillyT
 
 - `/rp speak`: TTS from latest assistant reply
 - `/rp image`: image generation from role context, supports `--prompt` / `--style`
+- `/rp video`: AI video generation from role context, supports `--prompt` / `--style` (Gemini Veo 3.1)
 - `/rp agent-image`: inspect or switch native-agent image provider / model / enabled state
 - Optional agent tool: `rp_generate_image`, which lets the native OpenClaw agent generate and return images in normal non-`/rp` chats
+- Automatic media follow-ups in Telegram: image, voice, and video auto-generation when user intent is detected
 - Built-in multimodal rate limit (default 5s window)
 
 ### 5. Native OpenClaw Integration
 
 - Command registration: `/rp`
-- Hook integration: `message_received`, `before_prompt_build`, `llm_output`
+- Hook integration: `message_received`, `before_prompt_build`, `before_message_write`, `llm_output`
 - Inherits OpenClaw global model config when available
 - Supports OpenAI-compatible and Gemini provider stacks
 - SQLite persistence for assets, sessions, summaries, and memory vectors
-- Session isolation in global mode: RP contexts are keyed by both `conversationId` and `channelId` to prevent cross-conversation leakage
+- **Full session isolation**: RP messages are blocked from the main agent conversation via `before_message_write`, keeping the main context completely clean after `/rp end`
+- Post-session context break: after `/rp end`, a system instruction forces the LLM to drop the RP persona
 
 ### ⭐ Focus: Companion Agent (Generative Agents Style) [WIP]
 
@@ -114,6 +117,7 @@ Note: install entry names vary by gateway version (plugin manager button vs admi
 - `/rp retry [--edit "..."]`
 - `/rp speak`
 - `/rp image [--prompt "..."] [--style "..."]`
+- `/rp video [--prompt "..."] [--style "..."]`
 - `/rp agent-image [--provider inherit|openai|gemini] [--model "..."] [--clear-model] [--enable|--disable]`
 - `/rp companion-nudge [--reason "..."] [--idle-minutes N] [--mode balanced|checkin|question|report] [--force]`
 - `/rp sync-agent-persona` — write current RP character into the agent's `SOUL.md`

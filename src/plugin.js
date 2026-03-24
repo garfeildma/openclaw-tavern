@@ -25,6 +25,7 @@ export function createRPPlugin(options = {}) {
     modelProvider: options.modelProvider,
     ttsProvider: options.ttsProvider,
     imageProvider: options.imageProvider,
+    videoProvider: options.videoProvider,
     rateLimiter: options.rateLimiter,
     getAgentImageConfig: options.getAgentImageConfig,
     updateAgentImageConfig: options.updateAgentImageConfig,

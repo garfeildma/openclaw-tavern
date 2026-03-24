@@ -263,5 +263,64 @@ export function createOpenAICompatibleProviders(config = {}) {
         throw new Error("Image response missing payload");
       },
     },
+
+    videoProvider: {
+      async generate({ prompt, style, durationSeconds }) {
+        const mergedPrompt = style ? `${prompt}\n\nStyle: ${style}` : prompt;
+        const videoModel = config.videoModel || "sora-2";
+        const duration = durationSeconds || 2;
+
+        // Start video generation
+        const startResponse = await post(`${baseUrl}/videos/generations`, {
+          apiKey,
+          body: {
+            model: videoModel,
+            prompt: mergedPrompt,
+            duration: duration,
+            size: config.videoSize || "480x480",
+          },
+          timeoutMs: 30000,
+        });
+        const startJson = await readJsonResponse(startResponse);
+        const jobId = startJson?.id;
+        if (!jobId) {
+          throw new Error("Video generation did not return a job id");
+        }
+
+        // Poll until done
+        const pollTimeoutMs = config.videoTimeoutMs || 300000;
+        const pollIntervalMs = 8000;
+        const deadline = Date.now() + pollTimeoutMs;
+
+        while (Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+
+          const pollResponse = await fetch(`${baseUrl}/videos/generations/${jobId}`, {
+            method: "GET",
+            headers: defaultHeaders(apiKey),
+          });
+          if (!pollResponse.ok) {
+            const errText = await pollResponse.text();
+            throw new Error(`Video poll failed HTTP ${pollResponse.status}: ${errText}`);
+          }
+          const pollJson = await pollResponse.json();
+          const status = String(pollJson?.status || "").toLowerCase();
+
+          if (status === "completed" || status === "succeeded") {
+            const videoUrl = pollJson?.data?.[0]?.url || pollJson?.video_url || pollJson?.output?.url;
+            if (!videoUrl) {
+              throw new Error("Video generation returned no video URL");
+            }
+            return { videoUrl, durationSeconds: duration, raw: pollJson };
+          }
+
+          if (status === "failed" || status === "error") {
+            throw new Error(`Video generation failed: ${pollJson?.error?.message || "unknown error"}`);
+          }
+        }
+
+        throw new Error("Video generation timed out");
+      },
+    },
   };
 }

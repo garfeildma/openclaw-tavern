@@ -68,7 +68,7 @@ test("classifyMediaIntentWithModel parses image label", async () => {
     },
     text: "让我看清楚一点",
   });
-  assert.deepEqual(result, { image: true, voice: false });
+  assert.deepEqual(result, { image: true, voice: false, video: false });
 });
 
 test("classifyMediaIntentWithModel parses both label", async () => {
@@ -80,5 +80,5 @@ test("classifyMediaIntentWithModel parses both label", async () => {
     },
     text: "给我看看你再说句话给我听",
   });
-  assert.deepEqual(result, { image: true, voice: true });
+  assert.deepEqual(result, { image: true, voice: true, video: false });
 });

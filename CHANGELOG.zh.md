@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-03-24
+
+### Added
+- 新增 `/rp video` 命令，基于角色上下文生成 AI 视频，支持 `--prompt` 和 `--style` 选项。
+- 新增 Telegram 自动视频跟进：当用户消息表达出视频意图时，插件在正常文字回复后自动补发短视频。
+- 新增 `before_message_write` hook，在 RP 活跃期间返回 `{ block: true }` 完全隔离 RP 会话与主 OpenClaw 对话——RP 消息仅存储在插件自有的 SQLite 数据库中，主 agent 上下文保持完全干净。
+- 新增会话结束后 context break 注入：`/rp end` 后通过 `before_prompt_build` 注入系统指令，强制 LLM 退出角色并恢复原始人设。
+- 新增 `recentlyEndedRpChannels` 跟踪机制，确保即使 rpContext 已被清理，后续消息仍能注入 context break。
+
+### Improved
+- 为 `autoImage.js` 中所有自动媒体占位符/成功/失败提示语新增 i18n 支持（图片、语音、视频）。
+- `findRpContext` 新增回退策略：当 `before_prompt_build` 的 ctx 中 `conversationId` 为空时，从 `ctx.sessionKey` 中提取候选 ID 进行匹配。
+
+### Fixed
+- 修复 `before_prompt_build` hook 因 ctx 中 `conversationId` 为空导致找不到 RP 上下文的问题，该问题导致角色 prompt 从未被注入。
+- 修复 `/rp end` 后角色人设泄漏到正常对话的问题，原因是主 OpenClaw 对话历史中仍保留了 RP 消息。
+
 ## 2026-03-19
 
 ### Improved

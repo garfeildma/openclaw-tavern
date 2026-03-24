@@ -125,6 +125,7 @@ function helpText() {
     "  /rp retry [--edit \"...\"]  重新生成回复",
     "  /rp speak        语音合成最后一条回复",
     "  /rp image [--prompt \"...\"] [--style \"...\"]",
+    "  /rp video [--prompt \"...\"] [--style \"...\"]   生成 2 秒短视频",
     "  /rp agent-image [--provider inherit|openai|gemini] [--model \"...\"] [--clear-model] [--enable|--disable]",
     "  /rp companion-nudge [--reason \"...\"] [--idle-minutes N] [--mode balanced|checkin|question|report] [--force]",
     "  /rp pause / resume / end",
@@ -442,6 +443,7 @@ export class CommandRouter {
     modelProvider,
     ttsProvider,
     imageProvider,
+    videoProvider,
     rateLimiter,
     getAgentImageConfig,
     updateAgentImageConfig,
@@ -451,6 +453,7 @@ export class CommandRouter {
     this.modelProvider = modelProvider;
     this.ttsProvider = ttsProvider;
     this.imageProvider = imageProvider;
+    this.videoProvider = videoProvider;
     this.rateLimiter = rateLimiter || new InMemoryRateLimiter({ windowMs: 5000 });
     this.getAgentImageConfig = getAgentImageConfig;
     this.updateAgentImageConfig = updateAgentImageConfig;
@@ -517,6 +520,8 @@ export class CommandRouter {
         return this.speak(nctx);
       case "image":
         return this.image(nctx, options);
+      case "video":
+        return this.video(nctx, options);
       case "agent-image":
         return this.agentImage(nctx, options);
       case "companion-nudge":
@@ -1076,6 +1081,101 @@ export class CommandRouter {
     return ok("🖼️ 图片已生成", {
       image_url: result?.imageUrl,
       prompt_used: String(scenePrompt || "").slice(0, 200),
+    });
+  }
+
+  async video(ctx, options) {
+    const session = this.store.getSessionByChannelKey(buildChannelSessionKey(ctx));
+    if (!session || session.user_id !== ctx.userId) {
+      throw new RPError(RP_ERROR_CODES.SESSION_NOT_FOUND, "No session in this channel");
+    }
+    if (!this.videoProvider?.generate) {
+      throw new RPError(RP_ERROR_CODES.MEDIA_FAILED, "Video provider not configured");
+    }
+    this.rateLimiter.consume(`${ctx.userId}:${session.id}:video`);
+
+    // Gather character context
+    const bundle = this.store.getSessionAssetBundle(session.id);
+    const cardDetail = bundle?.card?.detail || {};
+    const charName = cardDetail.name || bundle?.card?.name || "Character";
+    const charDesc = stripHtml(cardDetail.description || "").slice(0, 500);
+    const charPersonality = stripHtml(cardDetail.personality || "").slice(0, 300);
+
+    // Get latest assistant reply
+    const turns = this.store.getRecentTurns(session.id, 4);
+    const lastAssistant = [...turns].reverse().find((t) => t.role === "assistant");
+    const lastContent = lastAssistant?.content || "";
+
+    let scenePrompt;
+    if (options?.prompt) {
+      scenePrompt = String(options.prompt);
+    } else if (this.modelProvider?.generate) {
+      const promptGenMessages = [
+        {
+          role: "system",
+          content: [
+            "You are an expert video prompt engineer. Given a character description and their latest dialogue,",
+            "generate a vivid, detailed short video generation prompt in English.",
+            "Focus on motion and action: character movement, gestures, expressions, environment dynamics, camera motion.",
+            "The video will be very short (2-4 seconds), so focus on a single clear action or moment.",
+            "Output ONLY the video prompt, no explanations or extra text.",
+            "Keep it under 150 words.",
+          ].join(" "),
+        },
+        {
+          role: "user",
+          content: [
+            `Character: ${charName}`,
+            charDesc ? `Description: ${charDesc}` : "",
+            charPersonality ? `Personality: ${charPersonality}` : "",
+            `Latest dialogue: "${lastContent.slice(0, 500)}"`,
+            options?.style ? `Style hint: ${options.style}` : "",
+            "",
+            "Generate a short video prompt based on this context:",
+          ].filter(Boolean).join("\n"),
+        },
+      ];
+
+      try {
+        const promptResult = await retryWithBackoff(
+          () =>
+            this.modelProvider.generate({
+              prompt: { messages: promptGenMessages },
+              modelConfig: { temperature: 0.8 },
+            }),
+          { retries: 1, delaysMs: [1000], timeoutMs: 30000 },
+        );
+        const generatedPrompt = String(promptResult?.content || "").trim();
+        scenePrompt = generatedPrompt || `${charName} in motion. ${charDesc}. Scene: ${lastContent.slice(0, 200)}`;
+      } catch {
+        scenePrompt = `${charName} in motion. ${charDesc}. Scene: ${lastContent.slice(0, 200)}`;
+      }
+    } else {
+      scenePrompt = `${charName} in motion. ${charDesc}. Scene: ${lastContent.slice(0, 200)}`;
+    }
+
+    const styleHint = options?.style ? String(options.style) : "";
+    const durationSeconds = 4;
+
+    const result = await retryWithBackoff(
+      () =>
+        this.videoProvider.generate({
+          prompt: scenePrompt,
+          style: styleHint,
+          durationSeconds,
+          session,
+          userId: ctx.userId,
+        }),
+      { retries: 1, delaysMs: [3000], timeoutMs: 360000 },
+    ).catch((err) => {
+      throw new RPError(RP_ERROR_CODES.MEDIA_FAILED, err?.message || "Video generation failed");
+    });
+    this.sessionManager?.logger?.info?.("rp.video.done", { user_id: ctx.userId, session_id: session.id });
+
+    return ok("🎬 视频已生成", {
+      video_url: result?.videoUrl,
+      prompt_used: String(scenePrompt || "").slice(0, 200),
+      duration_seconds: durationSeconds,
     });
   }
 

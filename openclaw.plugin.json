@@ -1,5 +1,5 @@
 {
-  "id": "openclaw-tavern-plugin",
+  "id": "openclaw-rp-plugin",
   "name": "OpenClaw SillyTavern Plugin",
   "description": "SillyTavern-compatible role-play command plugin for OpenClaw with long memory, multimodal output, and Generative-Agents-style companion.",
   "version": "0.1.0",

@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-03-24
+
+### Added
+- Added `/rp video` command for AI video generation from character context, supporting `--prompt` and `--style` options.
+- Added automatic video follow-up in Telegram: when a user message implies video intent, the plugin auto-generates a short video after the normal assistant response.
+- Added `before_message_write` hook with `{ block: true }` to fully isolate RP sessions from the main OpenClaw conversation — RP messages are only stored in the plugin's own SQLite database, keeping the main agent context completely clean.
+- Added post-session context break injection: after `/rp end`, a system instruction is injected via `before_prompt_build` to force the LLM to drop the RP character and revert to its original persona.
+- Added `recentlyEndedRpChannels` tracking to ensure the context break is injected even when rpContext maps are already cleaned up by the time the next message arrives.
+
+### Improved
+- Added i18n support for all auto-media placeholder/success/failure messages (image, voice, video) in `autoImage.js`.
+- Added `findRpContext` fallback: when `before_prompt_build` ctx has no `conversationId`, the function now extracts candidate IDs from `ctx.sessionKey` to match stored RP contexts.
+
+### Fixed
+- Fixed `before_prompt_build` hook not finding RP context due to `conversationId` being empty in the hook ctx, causing the RP character prompt to never be injected.
+- Fixed RP character persona leaking into normal conversations after `/rp end` because the main OpenClaw conversation history retained RP messages.
+
 ## 2026-03-19
 
 ### Added

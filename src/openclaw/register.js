@@ -15,7 +15,9 @@ import {
   classifyMediaIntentWithModel,
   detectPhotoRequestIntent,
   detectVoiceRequestIntent,
+  detectVideoRequestIntent,
   inferPhotoStyleHint,
+  inferVideoStyleHint,
   shouldClassifyMediaIntent,
 } from "../utils/imageIntent.js";
 import {
@@ -32,7 +34,7 @@ import {
   normalizeAgentImageConfig,
   openclawRpPluginConfigSchema,
 } from "./agentImageTool.js";
-import { deliverAutoImageForTelegram, deliverAutoSpeakForTelegram } from "./autoImage.js";
+import { deliverAutoImageForTelegram, deliverAutoSpeakForTelegram, deliverAutoVideoForTelegram } from "./autoImage.js";
 import { buildChannelSessionKey } from "../utils/sessionKey.js";
 
 const execFileAsync = promisify(execFile);
@@ -81,7 +83,9 @@ function extFromMime(mimeType) {
   if (mime.includes("jpeg") || mime.includes("jpg")) return "jpg";
   if (mime.includes("webp")) return "webp";
   if (mime.includes("gif")) return "gif";
-  if (mime.includes("mp3") || mime.includes("mpeg")) return "mp3";
+  if (mime.includes("mp4")) return "mp4";
+  if (mime.includes("webm")) return "webm";
+  if (mime.includes("mp3") || (mime.includes("mpeg") && !mime.includes("video"))) return "mp3";
   if (mime.includes("wav")) return "wav";
   if (mime.includes("ogg")) return "ogg";
   if (mime.includes("l16") || mime.includes("pcm")) return "pcm";
@@ -180,8 +184,13 @@ function isVoiceMediaSource(rawUrl) {
 }
 
 function buildCommandContext(ctx) {
-  const channelType = String(ctx.channel || ctx.channelId || "unknown");
-  const platformContextId = String(ctx.to || ctx.accountId || channelType || "unknown");
+  // Lowercase channelType to match buildHookRouterContext which also lowercases.
+  const channelType = String(ctx.channel || ctx.channelId || "unknown").toLowerCase();
+  // Prefer conversationId (same field that hooks use via hookCtx.conversationId)
+  // so that the session key matches what message_received will look for later.
+  const platformContextId = String(
+    ctx.conversationId || ctx.to || ctx.accountId || channelType || "unknown",
+  );
   const channelId = ctx.messageThreadId
     ? `${platformContextId}:${ctx.messageThreadId}`
     : platformContextId;
@@ -384,22 +393,91 @@ function findRpContext(activeByAgentSessionKey, activeByChannel, ctx) {
   }
   // Build a composite channelKey that includes conversationId to prevent
   // cross-conversation leakage when the plugin runs in global mode.
-  const channelKey = [
-    asString(ctx?.channelId),
-    asString(ctx?.conversationId),
-  ].filter(Boolean).join(":").toLowerCase();
+  const channelId = asString(ctx?.channelId);
+  const conversationId = asString(ctx?.conversationId);
+  const channelKey = [channelId, conversationId]
+    .filter(Boolean).join(":").toLowerCase();
   if (channelKey) {
     const byChannel = activeByChannel.get(channelKey);
     if (byChannel) {
       return byChannel;
     }
   }
-  // Legacy fallback: try channelId alone (without conversationId) so that
+
+  // before_prompt_build ctx often has no conversationId, but has sessionKey
+  // like "agent:main:telegram:direct:325814479".  Extract the trailing
+  // numeric/prefixed chat-id segment and try it as conversationId.
+  if (agentSessionKey && !conversationId) {
+    const segments = agentSessionKey.split(":");
+    // Try the last segment(s) as a conversationId candidate.
+    // sessionKey format: agent:<name>:<channel>:<mode>:<chatId>
+    for (let i = segments.length - 1; i >= 2; i--) {
+      const candidate = segments.slice(i).join(":");
+      const candidateKey = [channelId, channelId, candidate]
+        .filter(Boolean).join(":").toLowerCase();
+      const byCandidate = activeByChannel.get(candidateKey);
+      if (byCandidate) {
+        return byCandidate;
+      }
+      // Also try channelId:candidate (without duplicating channelId)
+      const shortKey = [channelId, candidate]
+        .filter(Boolean).join(":").toLowerCase();
+      if (shortKey !== candidateKey) {
+        const byShort = activeByChannel.get(shortKey);
+        if (byShort) {
+          return byShort;
+        }
+      }
+    }
+  }
+
+  // Last resort: try channelId alone (without conversationId) so that
   // contexts stored before this patch are still discoverable.
-  const legacyChannelKey = asString(ctx?.channelId).toLowerCase();
+  const legacyChannelKey = channelId.toLowerCase();
   if (legacyChannelKey && legacyChannelKey !== channelKey) {
     return activeByChannel.get(legacyChannelKey) || null;
   }
+  return null;
+}
+
+/**
+ * Look up the recentlyEndedRpChannels map using the same ctx-to-key
+ * extraction strategy as findRpContext.  Returns the matching map key
+ * (so the caller can delete it) or null.
+ */
+function findRecentlyEndedKey(recentlyEnded, ctx, ttlMs) {
+  const now = Date.now();
+  // Prune expired entries
+  for (const [k, v] of recentlyEnded) {
+    if (now - v.at > ttlMs) recentlyEnded.delete(k);
+  }
+  if (recentlyEnded.size === 0) return null;
+
+  const channelId = asString(ctx?.channelId);
+  const conversationId = asString(ctx?.conversationId);
+  const directKey = [channelId, conversationId]
+    .filter(Boolean).join(":").toLowerCase();
+  if (directKey && recentlyEnded.has(directKey)) return directKey;
+
+  // Try extracting from sessionKey (same logic as findRpContext)
+  const agentSessionKey = asString(ctx?.sessionKey);
+  if (agentSessionKey && !conversationId) {
+    const segments = agentSessionKey.split(":");
+    for (let i = segments.length - 1; i >= 2; i--) {
+      const candidate = segments.slice(i).join(":");
+      const candidateKey = [channelId, channelId, candidate]
+        .filter(Boolean).join(":").toLowerCase();
+      if (recentlyEnded.has(candidateKey)) return candidateKey;
+      const shortKey = [channelId, candidate]
+        .filter(Boolean).join(":").toLowerCase();
+      if (shortKey !== candidateKey && recentlyEnded.has(shortKey)) return shortKey;
+    }
+  }
+
+  // Legacy fallback
+  const legacyKey = channelId.toLowerCase();
+  if (legacyKey && legacyKey !== directKey && recentlyEnded.has(legacyKey)) return legacyKey;
+
   return null;
 }
 
@@ -489,11 +567,12 @@ function resolveHookThreadId(event, hookCtx) {
 
 async function resolveAutoMediaDecisions({ router, autoMedia, logger }) {
   if (!autoMedia) {
-    return { imageStyleHint: null, shouldSpeak: false };
+    return { imageStyleHint: null, shouldSpeak: false, videoStyleHint: null };
   }
 
   let imageStyleHint = autoMedia.imageStyleHint || null;
   let shouldSpeak = Boolean(autoMedia.shouldSpeak);
+  let videoStyleHint = autoMedia.videoStyleHint || null;
 
   if (
     autoMedia.needsModelCheck &&
@@ -505,6 +584,7 @@ async function resolveAutoMediaDecisions({ router, autoMedia, logger }) {
       text: autoMedia.userContent,
       allowImage: Boolean(router?.imageProvider?.generate),
       allowVoice: Boolean(router?.ttsProvider?.synthesize),
+      allowVideo: Boolean(router?.videoProvider?.generate),
     });
     if (classified.image && !imageStyleHint) {
       imageStyleHint = inferPhotoStyleHint(autoMedia.userContent);
@@ -512,12 +592,15 @@ async function resolveAutoMediaDecisions({ router, autoMedia, logger }) {
     if (classified.voice) {
       shouldSpeak = true;
     }
+    if (classified.video && !videoStyleHint) {
+      videoStyleHint = inferVideoStyleHint(autoMedia.userContent);
+    }
     logger?.info?.(
-      `[openclaw-rp] auto media classifier result image=${classified.image} voice=${classified.voice}`,
+      `[openclaw-rp] auto media classifier result image=${classified.image} voice=${classified.voice} video=${classified.video}`,
     );
   }
 
-  return { imageStyleHint, shouldSpeak };
+  return { imageStyleHint, shouldSpeak, videoStyleHint };
 }
 
 function buildRouteKey(channelId, accountId, peer) {
@@ -693,7 +776,7 @@ function tryFindSessionByUserAndChannel(db, store, channelType, userId) {
       .prepare(
         `SELECT id
          FROM rp_sessions
-         WHERE channel_type = ? AND user_id = ? AND status != 'ended'
+         WHERE lower(channel_type) = ? AND user_id = ? AND status != 'ended'
          ORDER BY updated_at DESC
          LIMIT 1`,
       )
@@ -714,7 +797,7 @@ function tryFindLatestSessionByChannel(db, store, channelType) {
       .prepare(
         `SELECT id
          FROM rp_sessions
-         WHERE channel_type = ? AND status != 'ended'
+         WHERE lower(channel_type) = ? AND status != 'ended'
          ORDER BY updated_at DESC
          LIMIT 1`,
       )
@@ -1529,6 +1612,10 @@ function resolveProviderConfig(apiConfig, overrides = {}) {
         process.env.OPENCLAW_RP_GEMINI_IMAGE_MODEL ||
         fileConfig.gemini_image_model ||
         process.env.GEMINI_IMAGE_MODEL,
+      videoModel:
+        process.env.OPENCLAW_RP_GEMINI_VIDEO_MODEL ||
+        fileConfig.gemini_video_model ||
+        process.env.GEMINI_VIDEO_MODEL,
       embeddingModel:
         inherited.gemini.embeddingModel ||
         process.env.OPENCLAW_RP_GEMINI_EMBEDDING_MODEL ||
@@ -1551,6 +1638,12 @@ function resolveProviderConfig(apiConfig, overrides = {}) {
           fileConfig.gemini_image_timeout_ms ||
           process.env.GEMINI_IMAGE_TIMEOUT_MS,
         120000,
+      ),
+      videoTimeoutMs: toPositiveNumber(
+        process.env.OPENCLAW_RP_GEMINI_VIDEO_TIMEOUT_MS ||
+          fileConfig.gemini_video_timeout_ms ||
+          process.env.GEMINI_VIDEO_TIMEOUT_MS,
+        300000,
       ),
       embeddingTimeoutMs: toPositiveNumber(
         process.env.OPENCLAW_RP_GEMINI_EMBEDDING_TIMEOUT_MS ||
@@ -1585,6 +1678,10 @@ function resolveProviderConfig(apiConfig, overrides = {}) {
         process.env.OPENCLAW_RP_GEMINI_IMAGE_MODEL ||
         fileConfig.gemini_image_model ||
         process.env.GEMINI_IMAGE_MODEL,
+      videoModel:
+        process.env.OPENCLAW_RP_GEMINI_VIDEO_MODEL ||
+        fileConfig.gemini_video_model ||
+        process.env.GEMINI_VIDEO_MODEL,
       embeddingModel:
         inherited.gemini.embeddingModel ||
         process.env.OPENCLAW_RP_GEMINI_EMBEDDING_MODEL ||
@@ -1607,6 +1704,12 @@ function resolveProviderConfig(apiConfig, overrides = {}) {
           fileConfig.gemini_image_timeout_ms ||
           process.env.GEMINI_IMAGE_TIMEOUT_MS,
         120000,
+      ),
+      videoTimeoutMs: toPositiveNumber(
+        process.env.OPENCLAW_RP_GEMINI_VIDEO_TIMEOUT_MS ||
+          fileConfig.gemini_video_timeout_ms ||
+          process.env.GEMINI_VIDEO_TIMEOUT_MS,
+        300000,
       ),
       embeddingTimeoutMs: toPositiveNumber(
         process.env.OPENCLAW_RP_GEMINI_EMBEDDING_TIMEOUT_MS ||
@@ -1644,6 +1747,10 @@ function resolveProviderConfig(apiConfig, overrides = {}) {
       process.env.OPENCLAW_RP_OPENAI_IMAGE_MODEL ||
       fileConfig.openai_image_model ||
       process.env.OPENAI_IMAGE_MODEL,
+    videoModel:
+      process.env.OPENCLAW_RP_OPENAI_VIDEO_MODEL ||
+      fileConfig.openai_video_model ||
+      process.env.OPENAI_VIDEO_MODEL,
     embeddingModel:
       inherited.openai.embeddingModel ||
       process.env.OPENCLAW_RP_OPENAI_EMBEDDING_MODEL ||
@@ -1666,6 +1773,12 @@ function resolveProviderConfig(apiConfig, overrides = {}) {
         fileConfig.openai_image_timeout_ms ||
         process.env.OPENAI_IMAGE_TIMEOUT_MS,
       60000,
+    ),
+    videoTimeoutMs: toPositiveNumber(
+      process.env.OPENCLAW_RP_OPENAI_VIDEO_TIMEOUT_MS ||
+        fileConfig.openai_video_timeout_ms ||
+        process.env.OPENAI_VIDEO_TIMEOUT_MS,
+      300000,
     ),
     embeddingTimeoutMs: toPositiveNumber(
       process.env.OPENCLAW_RP_OPENAI_EMBEDDING_TIMEOUT_MS ||
@@ -1700,6 +1813,11 @@ export default {
     const activeRpContextByAgentSessionKey = new Map();
     const activeRpContextByChannel = new Map();
     const rpContextTtlMs = 120000;
+    // Track channels where an RP session recently ended so that
+    // before_prompt_build can inject a context-break even after the
+    // rpContext maps have been cleaned up.
+    const recentlyEndedRpChannels = new Map(); // key → { at, sessionId }
+    const recentlyEndedTtlMs = 300000; // 5 min
 
     function getCurrentAgentImageConfig() {
       return {
@@ -1878,14 +1996,29 @@ export default {
               },
             };
           }
+          // When an RP session is ended via command, record the channel
+          // so that subsequent before_prompt_build calls can inject the
+          // context-break even after the rpContext maps are cleaned up.
+          if (parsedCommand?.command === "end" && response?.ok) {
+            const cmdCtx = buildCommandContext(ctx);
+            const endChannelKey = [
+              cmdCtx.channelType,
+              cmdCtx.platformContextId,
+            ].filter(Boolean).join(":").toLowerCase();
+            if (endChannelKey) {
+              recentlyEndedRpChannels.set(endChannelKey, { at: Date.now(), sessionId: response?.data?.session_id || "" });
+              api.logger?.info?.(`[openclaw-rp] command end: recorded recently ended for channel ${endChannelKey}`);
+            }
+          }
           scheduleFollowupIfNeeded(response, ctx, api.logger, api.runtime.channel?.telegram);
-          const mediaRaw = response?.data?.audio_url || response?.data?.image_url;
+          const mediaRaw = response?.data?.audio_url || response?.data?.image_url || response?.data?.video_url;
           const mediaUrl = mediaRaw ? await materializeMediaUrl(mediaRaw, inboundMediaDir) : undefined;
 
           return {
             text: formatResponseText(response),
             mediaUrl,
             audioAsVoice: Boolean(response?.data?.audio_url && mediaUrl && isVoiceMediaSource(mediaRaw)),
+            asVideo: Boolean(response?.data?.video_url && mediaUrl),
           };
         } catch (err) {
           const rpErr = asRPError(err);
@@ -1962,6 +2095,10 @@ export default {
           isTelegramAutoMedia && router?.ttsProvider?.synthesize
             ? detectVoiceRequestIntent(content)
             : null;
+        const autoVideoIntent =
+          isTelegramAutoMedia && router?.videoProvider?.generate
+            ? detectVideoRequestIntent(content)
+            : null;
         const shouldModelCheckAutoMedia =
           isTelegramAutoMedia &&
           router?.modelProvider?.generate &&
@@ -1991,10 +2128,11 @@ export default {
           routerCtx,
           userContent: content,
           autoMedia:
-            (autoImageIntent || autoVoiceIntent || shouldModelCheckAutoMedia) && isTelegramAutoMedia
+            (autoImageIntent || autoVoiceIntent || autoVideoIntent || shouldModelCheckAutoMedia) && isTelegramAutoMedia
               ? {
                   imageStyleHint: autoImageIntent?.styleHint || null,
                   shouldSpeak: Boolean(autoVoiceIntent),
+                  videoStyleHint: autoVideoIntent?.styleHint || null,
                   needsModelCheck: Boolean(shouldModelCheckAutoMedia),
                   userContent: content,
                   accountId: asString(hookCtx?.accountId),
@@ -2013,8 +2151,23 @@ export default {
     api.on("before_prompt_build", async (event, ctx) => {
       try {
         await ensureInitialized();
+        const debugChannelKey = [
+          asString(ctx?.channelId),
+          asString(ctx?.conversationId),
+        ].filter(Boolean).join(":").toLowerCase();
+        api.logger?.info?.(`[openclaw-rp] before_prompt_build: ctx keys channelId=${asString(ctx?.channelId)} conversationId=${asString(ctx?.conversationId)} sessionKey=${asString(ctx?.sessionKey)} channelKey=${debugChannelKey} mapSize=${activeRpContextByChannel.size}`);
         const rpCtx = findRpContext(activeRpContextByAgentSessionKey, activeRpContextByChannel, ctx);
         if (!rpCtx) {
+          // Check if this channel recently had an RP session end.
+          const endedKey = findRecentlyEndedKey(recentlyEndedRpChannels, ctx, recentlyEndedTtlMs);
+          if (endedKey) {
+            recentlyEndedRpChannels.delete(endedKey);
+            api.logger?.info?.(`[openclaw-rp] before_prompt_build: injecting post-end context break for channel ${endedKey}`);
+            return {
+              prependContext: t("rp_session_ended_context_break"),
+            };
+          }
+          api.logger?.info?.(`[openclaw-rp] before_prompt_build: no rpCtx found, stored keys=[${[...activeRpContextByChannel.keys()].join(",")}]`);
           return;
         }
 
@@ -2030,8 +2183,17 @@ export default {
 
         const session = store.getSessionById(rpCtx.session.id);
         if (!session || session.status !== "active") {
+          // Record that this channel's RP session just ended so later
+          // before_prompt_build calls (after rpCtx is gone) can still
+          // inject the context-break.
+          if (rpCtx.channelKey) {
+            recentlyEndedRpChannels.set(rpCtx.channelKey, { at: Date.now(), sessionId: rpCtx.session.id });
+          }
           deleteRpContext(activeRpContextByAgentSessionKey, activeRpContextByChannel, rpCtx);
-          return;
+          api.logger?.info?.(`[openclaw-rp] before_prompt_build: session ${rpCtx.session.id} is ${session?.status || "missing"}, injecting context break`);
+          return {
+            prependContext: t("rp_session_ended_context_break"),
+          };
         }
 
         // Resolve the user's display name for {{user}} placeholder
@@ -2141,12 +2303,46 @@ export default {
                 materializeMedia: materializeMediaUrl,
               });
             }
+
+            if (decisions.videoStyleHint && router?.videoProvider?.generate) {
+              void deliverAutoVideoForTelegram({
+                router,
+                routerCtx: rpCtx.routerCtx,
+                styleHint: decisions.videoStyleHint,
+                inboundMediaDir,
+                telegramRuntime: api.runtime.channel?.telegram,
+                logger: api.logger,
+                accountId: rpCtx.autoMedia.accountId,
+                messageThreadId: rpCtx.autoMedia.messageThreadId,
+                apiConfig: api.config,
+                materializeMedia: materializeMediaUrl,
+              });
+            }
           })();
         }
 
         api.logger?.info?.(`[openclaw-rp] llm_output: appended assistant turn to session ${session.id}, length=${lastText.length}`);
       } catch (err) {
         api.logger?.warn?.(`[openclaw-rp] llm_output hook failed: ${String(err?.message || err)}`);
+      }
+    });
+
+    // Block user/assistant messages from being written to the main OpenClaw
+    // conversation during an active RP session.  This keeps the main context
+    // completely clean — RP turns are only stored in the plugin's own SQLite.
+    // Note: before_message_write MUST be synchronous (no async/await).
+    api.on("before_message_write", (event, ctx) => {
+      try {
+        if (!initialized) return;
+        const rpCtx = findRpContext(activeRpContextByAgentSessionKey, activeRpContextByChannel, ctx);
+        if (!rpCtx) return;
+        const session = store.getSessionById(rpCtx.session.id);
+        if (!session || session.status !== "active") return;
+        // Active RP session → block the write so the main conversation stays clean.
+        api.logger?.info?.(`[openclaw-rp] before_message_write: blocking write for active RP session ${session.id}`);
+        return { block: true };
+      } catch (_err) {
+        // On error, allow the write to proceed to avoid data loss.
       }
     });
 
